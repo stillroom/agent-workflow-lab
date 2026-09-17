@@ -1,0 +1,1960 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Workflow Lab — a walkthrough</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1b1e24; --panel-2: #21252c;
+    --ink: #e8e6e1; --ink-dim: #a8a49c; --line: #2e333b;
+    --accent: #c9a227; --green: #6fae7f; --red: #c86b5e; --blue: #7aa2c8;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 24px 18px 96px; }
+  header.hero { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 30px; }
+  h1 { font-size: clamp(1.5rem, 5vw, 2.1rem); margin: 0 0 10px; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-dim); margin: 0; }
+  .toc { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+          padding: 16px 18px; margin: 24px 0 34px; }
+  .toc h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .13em;
+             color: var(--ink-dim); margin: 0 0 10px; font-weight: 600; }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc a { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--line); }
+  .toc a:hover { color: var(--accent); }
+  section.lesson { margin: 0 0 46px; }
+  .lesson-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .badge { font: 600 .7rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+            color: var(--bg); background: var(--accent); padding: 6px 9px; border-radius: 5px; }
+  h2 { font-size: clamp(1.15rem, 4vw, 1.45rem); margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 1rem; margin: 26px 0 8px; color: var(--ink); }
+  .why { color: var(--ink-dim); margin: 12px 0 14px; }
+  ul.points { margin: 0 0 18px; padding-left: 20px; }
+  ul.points li { margin: 0 0 9px; }
+  code { font-family: var(--mono); font-size: .87em; background: var(--panel-2);
+          padding: 2px 6px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre.code { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+              padding: 14px 16px; overflow-x: auto; font-size: .78rem; line-height: 1.55;
+              -webkit-overflow-scrolling: touch; }
+  pre.code code { background: none; padding: 0; font-size: inherit; }
+  .out { background: #101216; border: 1px solid var(--line); border-left: 3px solid var(--green);
+          border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+          font: .76rem/1.55 var(--mono); white-space: pre; color: #cfd3d8; }
+  details { border: 1px solid var(--line); border-radius: 10px; margin: 0 0 12px;
+             background: var(--panel); }
+  details[open] { background: var(--panel); }
+  summary { cursor: pointer; padding: 13px 16px; font-weight: 600; font-size: .9rem;
+             list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--accent); }
+  details[open] summary::before { content: "▾ "; }
+  details > pre.code, details > p { margin: 0 16px 16px; }
+  .callout { background: var(--panel-2); border-left: 3px solid var(--accent);
+              border-radius: 8px; padding: 13px 16px; margin: 18px 0; font-size: .93rem; }
+  .callout.warn { border-left-color: var(--red); }
+  .callout.ok { border-left-color: var(--green); }
+  footer { border-top: 1px solid var(--line); margin-top: 46px; padding-top: 18px;
+            color: var(--ink-dim); font-size: .85rem; }
+  @media (max-width: 520px) {
+    .wrap { padding: 18px 13px 80px; }
+    pre.code { font-size: .72rem; padding: 12px; }
+    .out { font-size: .68rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Agent Workflow Lab</h1>
+  <p class="sub">A small, readable agent workflow — typed state, explicit
+  transitions, one Jev judgment, and a human approval gate you cannot bypass
+  by accident.</p>
+</header>
+
+<div class="toc">
+  <h2>What this walks you back through</h2>
+  <ol>
+    <li><a href="#quickstart">Run it in two minutes</a></li>
+    <li><a href="#shape">The shape of the thing</a></li>
+    <li><a href="#lesson-01">Lesson 01 — Encoding problems</a></li>
+    <li><a href="#lesson-02">Lesson 02 — A workflow you can read</a></li>
+    <li><a href="#lesson-03">Lesson 03 — Jev as one node</a></li>
+    <li><a href="#lesson-04">Lesson 04 — Same workflow, framework driver</a></li>
+    <li><a href="#evidence">Live evidence from this machine</a></li>
+    <li><a href="#limits">Honest limits</a></li>
+  </ol>
+</div>
+
+<section class="lesson" id="quickstart">
+  <div class="lesson-head"><span class="badge">Start</span><h2>Run it in two minutes</h2></div>
+  <p class="why">Nothing here needs an API key except the optional live Jev call.
+  The default judgment source is a stub, so the tests never spend money.</p>
+  <pre class="code" data-lang="bash"><code># one-time setup
+cd ~/Projects/agent-workflow-lab
+python3 -m venv .venv
+.venv/bin/python -m pip install pydantic pydantic-graph typesafe-sdk pytest
+
+# run the whole lab offline (no API key, no spend)
+.venv/bin/python -m pytest lessons -v
+
+# see a live Jev judgment drive the workflow, then freeze it for replay
+.venv/bin/python scripts/live_jev_demo.py
+
+# approve the exact artifact and watch the paused run finish
+.venv/bin/python scripts/approve_demo.py</code></pre>
+</section>
+
+<section class="lesson" id="shape">
+  <div class="lesson-head"><span class="badge">Shape</span><h2>The shape of the thing</h2></div>
+  <p class="why">Eight small files. Read them in this order; each one is short
+  enough to hold in your head at once.</p>
+  <pre class="code" data-lang="text"><code>agent_lab/state.py          typed state, legal transitions, terminals, budgets
+agent_lab/encoding.py       the encoding rules that stop silent corruption
+agent_lab/judgment.py       where a typed model judgment comes from
+agent_lab/runlog.py         append-only run evidence
+agent_lab/approvals.py      human approval bound to an exact digest
+agent_lab/workflow.py       the workflow as a PLAIN Python state machine
+agent_lab/graph_workflow.py the same workflow driven by pydantic-graph
+scripts/live_jev_demo.py    live Jev -&gt; workflow -&gt; approval gate</code></pre>
+
+  <div class="callout">
+    <b>The rule this lab is built on:</b> build the semantics, adopt the
+    infrastructure. The workflow definition and the evaluation contract are
+    yours. Checkpoint storage, tracing and durable execution are replaceable
+    later, and you should not build them on day one.
+  </div>
+
+  <h3>The path a run takes</h3>
+  <pre class="code" data-lang="text"><code>intake  -&gt;  classify  -&gt;  route  -&gt;  prepare  -&gt;  verify  -&gt;  await_approval
+                 |             |                                        |
+                 |             +-- not a fit -----------------&gt; REJECTED (final)
+                 |             +-- confidence &lt; 0.60 --------&gt; NEEDS_REVIEW (pause)
+                 +-- bad input ------------------------------&gt; raises before any call
+
+await_approval:  exact digest approved  -&gt;  SUCCESS
+                 anything else          -&gt;  NEEDS_REVIEW (still paused)</code></pre>
+</section>
+
+
+    <section class="lesson" id="lesson-01">
+      <header class="lesson-head">
+        <span class="badge">Lesson 01</span>
+        <h2>Encoding problems</h2>
+      </header>
+      <p class="why">Every hash, comparison and approval in this lab depends on bytes. Four failure modes are worth knowing by name.</p>
+      <ul class="points"><li><b>Wrong codec = mojibake.</b> UTF-8 bytes read as cp1252 give the printable <code>â€™</code> you see in reports. The same bytes read as latin-1 give invisible C1 control characters instead.</li>
+<li><b>Some corruption is unrecoverable.</b> cp1252 leaves 0x81 0x8D 0x8F 0x90 0x9D undefined, and <code>”</code> is <code>E2 80 9D</code> in UTF-8. A lossy decode destroys it for good.</li>
+<li><b>Line endings change digests.</b> The same body sent as CRLF and LF hashes differently, so an approval recorded on Windows stops matching.</li>
+<li><b>NFC vs NFD.</b> Two names that look identical can be different byte sequences, so they compare unequal and hash differently. Normalise before hashing.</li>
+<li><b>Never join fields by concatenation.</b> <code>('ab','c')</code> and <code>('a','bc')</code> concatenate to the same string. Joining with a NUL byte cannot collide, because NUL cannot appear in the fields.</li></ul>
+      <details>
+        <summary>Show the source: <code>agent_lab/encoding.py</code></summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;Encoding: the small set of rules that stop silent data corruption.
+
+Every function here exists because of a real failure mode:
+
+* text decoded with the wrong codec (mojibake)
+* a UTF-8 BOM left on the front of a string
+* CRLF vs LF changing a hash
+* NFC vs NFD making two &quot;identical&quot; names differ byte-for-byte
+* hashing fields by concatenation without a separator, so (&quot;ab&quot;,&quot;c&quot;) and
+  (&quot;a&quot;,&quot;bc&quot;) collide
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import hashlib
+import unicodedata
+from dataclasses import dataclass, field
+
+UTF8 = &quot;utf-8&quot;
+
+# Two different corruptions, often confused because they look different on
+# screen but are the same mistake (UTF-8 bytes read with an 8-bit codec):
+#
+#   bytes.decode(&quot;latin-1&quot;)  -&gt; C1 control characters (invisible / box glyphs)
+#   bytes.decode(&quot;cp1252&quot;)   -&gt; the printable &quot;â€™&quot; everyone recognises
+#
+# Windows tools default to cp1252 for &quot;ANSI&quot; files, which is why the printable
+# form is the one that shows up in reports.
+
+# Markers produced when UTF-8 bytes are decoded as Windows-1252 (printable).
+MOJIBAKE_MARKERS: dict[str, str] = {
+    &quot;\u00e2\u20ac\u2122&quot;: &quot;right single quote&quot;,
+    &quot;\u00e2\u20ac\u0153&quot;: &quot;left double quote&quot;,
+    &quot;\u00e2\u20ac\u009d&quot;: &quot;right double quote&quot;,
+    &quot;\u00e2\u20ac\u201c&quot;: &quot;en dash&quot;,
+    &quot;\u00e2\u20ac\u201d&quot;: &quot;em dash&quot;,
+    &quot;\u00c3\u00a9&quot;: &quot;e acute&quot;,
+    &quot;\u00c2\u00a3&quot;: &quot;pound sign&quot;,
+    &quot;\u00c3\u00a2&quot;: &quot;a-circumflex sequence&quot;,
+    &quot;\u00f0\u0178&quot;: &quot;emoji prefix&quot;,
+    &quot;\ufffd&quot;: &quot;already-lost character (replacement char)&quot;,
+}
+
+# Markers produced when the same bytes are decoded as Latin-1: the 0x80-0x9F
+# range becomes C1 control characters instead of printable symbols.
+LATIN1_C1_MARKERS: dict[str, str] = {
+    &quot;\u00e2\u0080&quot;: &quot;multi-byte lead (C1 control range)&quot;,
+    &quot;\u00c3&quot;: &quot;two-byte lead&quot;,
+}
+
+
+def detect_mojibake(text: str) -&gt; dict[str, int]:
+    &quot;&quot;&quot;Report every mojibake marker present, printable or control-character.&quot;&quot;&quot;
+    found = {m: text.count(m) for m in MOJIBAKE_MARKERS if m in text}
+    for m in LATIN1_C1_MARKERS:
+        count = text.count(m)
+        if count:
+            found[m] = found.get(m, 0) + count
+    return found
+
+
+@dataclass
+class Diagnosis:
+    text: str
+    had_bom: bool
+    newline_style: str
+    mojibake: dict[str, int] = field(default_factory=dict)
+    normalized: bool = False
+
+    @property
+    def clean(self) -&gt; bool:
+        return not self.had_bom and not self.mojibake
+
+
+def read_text_strict(path: str) -&gt; tuple[str, Diagnosis]:
+    &quot;&quot;&quot;Read a file as UTF-8 and report what was wrong with it.
+
+    We deliberately do NOT pass errors=&quot;replace&quot;: that turns corruption into
+    an ordinary-looking string, which is how bad data reaches production.
+    &quot;&quot;&quot;
+    raw = open(path, &quot;rb&quot;).read()  # noqa: SIM115 - explicit binary read is the point
+    return decode_strict(raw)
+
+
+def decode_strict(raw: bytes) -&gt; tuple[str, Diagnosis]:
+    had_bom = raw.startswith(b&quot;\xef\xbb\xbf&quot;)
+    if had_bom:
+        raw = raw[3:]
+    style = &quot;CRLF&quot; if b&quot;\r\n&quot; in raw else &quot;LF&quot;
+    text = raw.decode(UTF8)  # raises UnicodeDecodeError rather than corrupting
+    return text, Diagnosis(
+        text=text,
+        had_bom=had_bom,
+        newline_style=style,
+        mojibake=detect_mojibake(text),
+    )
+
+
+def repair_mojibake(text: str) -&gt; str:
+    &quot;&quot;&quot;Undo one round of UTF-8-read-with-an-8-bit-codec corruption.
+
+    Tries cp1252 first (the printable form), then latin-1 (the C1 form).
+    &quot;&quot;&quot;
+    for codec in (&quot;cp1252&quot;, &quot;latin-1&quot;):
+        try:
+            candidate = text.encode(codec).decode(UTF8)
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if candidate != text:
+            return candidate
+    return text
+
+
+def normalise(text: str, form: str = &quot;NFC&quot;) -&gt; str:
+    &quot;&quot;&quot;Canonical Unicode form. Without this, two names that look identical
+    compare unequal and hash differently.&quot;&quot;&quot;
+    return unicodedata.normalize(form, text)
+
+
+def to_lf(text: str) -&gt; str:
+    &quot;&quot;&quot;Git, Windows tools and hand edits disagree about line endings.&quot;&quot;&quot;
+    return text.replace(&quot;\r\n&quot;, &quot;\n&quot;).replace(&quot;\r&quot;, &quot;\n&quot;)
+
+
+def bind_digest(*fields: str) -&gt; str:
+    &quot;&quot;&quot;SHA-256 over fields joined by NUL.
+
+    NUL cannot appear in UTF-8 text fields, so (&quot;ab&quot;,&quot;c&quot;) and (&quot;a&quot;,&quot;bc&quot;)
+    produce different digests. Plain concatenation would collide.
+    &quot;&quot;&quot;
+    material = &quot;\0&quot;.join(fields).encode(UTF8)
+    return hashlib.sha256(material).hexdigest()
+
+
+def naive_digest(*fields: str) -&gt; str:
+    &quot;&quot;&quot;The version that looks fine and is wrong. Used by lesson 02 to show why.&quot;&quot;&quot;
+    return hashlib.sha256(&quot;&quot;.join(fields).encode(UTF8)).hexdigest()
+
+
+def canonical_digest(contact_id: int, subject: str, body: str) -&gt; str:
+    &quot;&quot;&quot;Exactly the binding the Stillroom acquisition app uses:
+    UTF-8 `contact_id + NUL + subject + NUL + body`.
+    &quot;&quot;&quot;
+    material = f&quot;{contact_id}\0{subject}\0{body}&quot;.encode(UTF8)
+    return hashlib.sha256(material).hexdigest()
+</code></pre>
+      </details>
+      <details>
+        <summary>Show the tests that pin the behaviour</summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;Lesson 01 — encoding.
+
+Every test in this file is a *demonstration of a real failure mode*, not a
+style preference. Run it and read the assertions; they are the lesson.
+
+    .venv/bin/python -m pytest lessons/lesson_01_encoding/test_encoding.py -v
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import unicodedata
+
+import pytest
+
+from agent_lab.encoding import (
+    bind_digest,
+    canonical_digest,
+    decode_strict,
+    detect_mojibake,
+    naive_digest,
+    normalise,
+    repair_mojibake,
+    to_lf,
+)
+
+# --------------------------------------------------------------------------
+# 1. Wrong codec = mojibake. UTF-8 bytes read as Latin-1, then re-encoded.
+# --------------------------------------------------------------------------
+
+
+def test_utf8_read_as_cp1252_produces_the_printable_mojibake() -&gt; None:
+    &quot;&quot;&quot;This is how curly quotes become &#x27;â€™&#x27; in a report.
+
+    Windows &quot;ANSI&quot; files are cp1252, so this is the form people actually see.
+    &quot;&quot;&quot;
+    original = &quot;Adam’s review request — “done&quot;
+    corrupted = original.encode(&quot;utf-8&quot;).decode(&quot;cp1252&quot;)
+
+    assert corrupted != original
+    assert &quot;â€™&quot; in corrupted  # the tell-tale marker
+    assert &quot;â€”&quot; in corrupted  # em dash
+    assert repair_mojibake(corrupted) == original
+
+
+def test_cp1252_undefined_bytes_cause_unrecoverable_loss() -&gt; None:
+    &quot;&quot;&quot;cp1252 leaves 0x81 0x8D 0x8F 0x90 0x9D undefined.
+
+    U+201D (right double quote) is E2 80 **9D** in UTF-8, so decoding those
+    bytes as cp1252 with a lossy error handler destroys them. The result is
+    NOT repairable by re-encoding, because the byte is already gone.
+    &quot;&quot;&quot;
+    original = &quot;“done”&quot;
+    try:
+        original.encode(&quot;utf-8&quot;).decode(&quot;cp1252&quot;)
+        raise AssertionError(&quot;expected cp1252 to reject the undefined 0x9D byte&quot;)
+    except UnicodeDecodeError as exc:
+        assert &quot;0x9d&quot; in str(exc).lower()
+
+    lossy = original.encode(&quot;utf-8&quot;).decode(&quot;cp1252&quot;, errors=&quot;replace&quot;)
+    assert &quot;\ufffd&quot; in lossy                  # replacement char present
+    assert repair_mojibake(lossy) != original  # cannot be undone
+    assert detect_mojibake(lossy)[&quot;\ufffd&quot;] &gt;= 1
+
+
+def test_utf8_read_as_latin1_gives_invisible_control_characters() -&gt; None:
+    &quot;&quot;&quot;The same bug with latin-1 instead of cp1252.
+
+    Bytes 0x80-0x9F have no printable Latin-1 equivalent, so they land as C1
+    control characters. It looks like boxes or nothing at all — which is why
+    people think the file is &#x27;fine&#x27; until something compares bytes.
+    &quot;&quot;&quot;
+    original = &quot;Adam’s notes&quot;
+    corrupted = original.encode(&quot;utf-8&quot;).decode(&quot;latin-1&quot;)
+
+    assert corrupted != original
+    assert &quot;\x80\x99&quot; in corrupted          # raw C1 bytes, invisible on screen
+    assert &quot;â€™&quot; not in corrupted           # NOT the printable form
+    assert repair_mojibake(corrupted) == original
+    assert detect_mojibake(corrupted), &quot;control-character form must still be detected&quot;
+
+
+def test_repair_is_not_magic() -&gt; None:
+    &quot;&quot;&quot;Repair only works because Latin-1 maps every byte to one character.
+    Read the SAME bytes with a lossy codec instead and the data is gone.&quot;&quot;&quot;
+    original = &quot;Adam’s notes&quot;
+    lossy = original.encode(&quot;utf-8&quot;).decode(&quot;utf-8&quot;, errors=&quot;replace&quot;)
+    assert lossy == original  # no corruption when the codec is correct
+
+    # Correct codec in, wrong codec out -&gt; unrecoverable question marks.
+    destroyed = original.encode(&quot;ascii&quot;, errors=&quot;replace&quot;).decode(&quot;ascii&quot;)
+    assert destroyed == &quot;Adam?s notes&quot;
+    assert repair_mojibake(destroyed) != original  # cannot be undone
+
+
+# --------------------------------------------------------------------------
+# 2. Strict decode raises instead of silently corrupting.
+# --------------------------------------------------------------------------
+
+
+def test_strict_decode_raises_on_invalid_utf8() -&gt; None:
+    bad = b&quot;caf\xe9&quot;  # Latin-1 encoded e-acute, not valid UTF-8
+    with pytest.raises(UnicodeDecodeError):
+        decode_strict(bad)
+
+
+def test_strict_decode_strips_bom_and_reports_newlines() -&gt; None:
+    text, diag = decode_strict(b&quot;\xef\xbb\xbfHello\r\nWorld\r\n&quot;)
+    assert text == &quot;Hello\r\nWorld\r\n&quot;
+    assert diag.had_bom is True
+    assert diag.newline_style == &quot;CRLF&quot;
+    assert diag.clean is False  # BOM present
+
+
+def test_diagnosis_flags_mojibake_markers() -&gt; None:
+    &quot;&quot;&quot;A file that was already corrupted and saved as UTF-8 is detectable.&quot;&quot;&quot;
+    corrupted = &quot;report — done&quot;.encode(&quot;utf-8&quot;).decode(&quot;cp1252&quot;)
+    _text, diag = decode_strict(corrupted.encode(&quot;utf-8&quot;))
+    assert diag.mojibake, &quot;expected mojibake markers to be reported&quot;
+    assert diag.clean is False
+
+
+# --------------------------------------------------------------------------
+# 3. Line endings change hashes.
+# --------------------------------------------------------------------------
+
+
+def test_line_endings_change_the_digest() -&gt; None:
+    lf = &quot;line one\nline two\n&quot;
+    crlf = &quot;line one\r\nline two\r\n&quot;
+    assert bind_digest(&quot;body&quot;, lf) != bind_digest(&quot;body&quot;, crlf)
+    assert to_lf(crlf) == lf
+    assert bind_digest(&quot;body&quot;, to_lf(crlf)) == bind_digest(&quot;body&quot;, lf)
+
+
+# --------------------------------------------------------------------------
+# 4. Unicode normalisation: identical-looking names, different bytes.
+# --------------------------------------------------------------------------
+
+
+def test_nfc_and_nfd_look_the_same_and_are_not() -&gt; None:
+    composed = &quot;Café&quot;                      # e-acute as one code point
+    decomposed = unicodedata.normalize(&quot;NFD&quot;, composed)  # e + combining acute
+
+    assert composed != decomposed
+    assert len(composed) != len(decomposed)
+    assert normalise(decomposed) == normalise(composed)
+    assert bind_digest(&quot;name&quot;, composed) != bind_digest(&quot;name&quot;, decomposed)
+    assert bind_digest(&quot;name&quot;, normalise(composed)) == bind_digest(
+        &quot;name&quot;, normalise(decomposed)
+    )
+
+
+# --------------------------------------------------------------------------
+# 5. Field binding: why we join with NUL.
+# --------------------------------------------------------------------------
+
+
+def test_concatenation_collides_and_nul_joining_does_not() -&gt; None:
+    &quot;&quot;&quot;(&#x27;ab&#x27;,&#x27;c&#x27;) and (&#x27;a&#x27;,&#x27;bc&#x27;) concatenate to the same string.
+
+    For a draft bound to a contact ID and subject, that is a real
+    approval-bypass shape: two different artifacts share one digest.
+    &quot;&quot;&quot;
+    assert naive_digest(&quot;ab&quot;, &quot;c&quot;) == naive_digest(&quot;a&quot;, &quot;bc&quot;)   # collision
+    assert bind_digest(&quot;ab&quot;, &quot;c&quot;) != bind_digest(&quot;a&quot;, &quot;bc&quot;)     # no collision
+
+
+def test_canonical_digest_matches_the_acquisition_app_rule() -&gt; None:
+    &quot;&quot;&quot;The Stillroom acquisition app binds
+    UTF-8 `contact_id + NUL + subject + NUL + body`.
+    &quot;&quot;&quot;
+    import hashlib
+
+    contact_id, subject, body = 1, &quot;invoice follow-up&quot;, &quot;Hi,\nThanks.\n&quot;
+    expected = hashlib.sha256(f&quot;{contact_id}\0{subject}\0{body}&quot;.encode()).hexdigest()
+
+    assert canonical_digest(contact_id, subject, body) == expected
+    assert len(canonical_digest(contact_id, subject, body)) == 64
+
+
+def test_digest_is_stable_across_equivalent_but_unnormalised_unicode() -&gt; None:
+    &quot;&quot;&quot;Normalise BEFORE hashing, or the same name yields two digests.&quot;&quot;&quot;
+    a = &quot;José&quot;
+    b = unicodedata.normalize(&quot;NFD&quot;, a)
+    assert canonical_digest(1, &quot;s&quot;, a) != canonical_digest(1, &quot;s&quot;, b)
+    assert canonical_digest(1, &quot;s&quot;, normalise(a)) == canonical_digest(1, &quot;s&quot;, normalise(b))
+</code></pre>
+      </details>
+    </section>
+    <section class="lesson" id="lesson-02">
+      <header class="lesson-head">
+        <span class="badge">Lesson 02</span>
+        <h2>A workflow you can read</h2>
+      </header>
+      <p class="why">The control plane is a loop, a router and an allow-list. The model never decides where the workflow goes.</p>
+      <ul class="points"><li><b>Typed state.</b> <code>RunState</code> carries the stage, the judgment, the artifact digest and a step budget. It is frozen, so a change is a new value, never a silent mutation.</li>
+<li><b>Illegal transitions raise.</b> <code>state.moved(...)</code> refuses a move the allow-list does not contain. That turns a router bug into a loud failure instead of a plausible run.</li>
+<li><b>Terminals mean something.</b> <code>NEEDS_REVIEW</code> is a pause and can resume. <code>REJECTED</code>, <code>FAILED_VALIDATION</code> and <code>FAILED_BUDGET</code> are final.</li>
+<li><b>The write-up of the artifact is deterministic.</b> No model writes the operations checklist; code composes it, so the same inputs give the same bytes.</li>
+<li><b>Append-only evidence.</b> Every step writes one JSON line. The log is never rewritten and can be digested as evidence.</li></ul>
+      <details>
+        <summary>Show the source: <code>agent_lab/workflow.py</code></summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;The workflow, written twice on purpose.
+
+`run_plain()` is a hand-written explicit state machine: a loop, a router, an
+allow-list of transitions, hard caps, and terminal states. Nothing is hidden.
+
+`graph_workflow.py` ports the SAME node functions to pydantic-graph. Both must
+produce identical events and digests — that is the acceptance test.
+
+Read this file first. The framework version is short precisely because the
+semantics already live here.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+
+from .approvals import Approval, ApprovalStore
+from .encoding import bind_digest, canonical_digest
+from .judgment import JudgmentSource
+from .runlog import RunEvent, RunLog
+from .state import (
+    BudgetExceeded,
+    IllegalTransition,
+    Intervention,
+    RunState,
+    Stage,
+    Terminal,
+    Transition,
+)
+
+NodeFn = Callable[[RunState, &quot;Deps&quot;], tuple[RunState, Transition, dict]]
+
+
+@dataclass
+class Deps:
+    &quot;&quot;&quot;Everything a node may touch. Passed in — never imported globally.&quot;&quot;&quot;
+
+    judgment: JudgmentSource
+    approvals: ApprovalStore
+    log: RunLog
+
+
+# --------------------------------------------------------------------------
+# Nodes. Each one does one job and declares the single transition it may take.
+# --------------------------------------------------------------------------
+
+
+def n_intake(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
+    &quot;&quot;&quot;Validate the typed input. Nothing else happens until this passes.&quot;&quot;&quot;
+    problems: list[str] = []
+    if not state.assessment_text.strip():
+        problems.append(&quot;assessment_text is empty&quot;)
+    if len(state.assessment_text) &gt; 20_000:
+        problems.append(&quot;assessment_text exceeds 20000 characters&quot;)
+    if problems:
+        raise ValueError(&quot;; &quot;.join(problems))
+    return state, Transition.TO_CLASSIFY, {&quot;chars&quot;: len(state.assessment_text)}
+
+
+def n_classify(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
+    &quot;&quot;&quot;Call the judgment source, validate, and record usage.&quot;&quot;&quot;
+    if not state.assessment_text.strip():
+        raise ValueError(&quot;assessment text is empty; nothing to classify&quot;)
+
+    judgment = deps.judgment.judge(state.assessment_text)
+    usage = getattr(deps.judgment, &quot;last_usage&quot;, {}) or {}
+    next_state = state.model_copy(update={&quot;judgment&quot;: judgment})
+    detail = {
+        &quot;source&quot;: judgment.source,
+        &quot;intervention&quot;: judgment.intervention.value,
+        &quot;confidence&quot;: judgment.confidence,
+        &quot;review_gap&quot;: judgment.review_gap_evidenced,
+        &quot;usage&quot;: usage,
+    }
+    return next_state, Transition.TO_ROUTE, detail
+
+
+def n_route(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
+    &quot;&quot;&quot;Deterministic router. Code decides — the model only supplied data.&quot;&quot;&quot;
+    assert state.judgment is not None, &quot;router reached without a judgment&quot;
+    judgment = state.judgment
+
+    if judgment.intervention is Intervention.NOT_A_FIT:
+        return state, Transition.REJECT, {&quot;reason&quot;: &quot;no evidenced fit&quot;}
+
+    # Thresholds live in code, are visible, and are evaluated on YOUR data.
+    if judgment.confidence &lt; 0.60:
+        return state, Transition.ESCALATE_REVIEW, {
+            &quot;reason&quot;: &quot;low confidence&quot;,
+            &quot;confidence&quot;: judgment.confidence,
+        }
+
+    return state, Transition.TO_PREPARE, {&quot;intervention&quot;: judgment.intervention.value}
+
+
+def n_prepare(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
+    &quot;&quot;&quot;Deterministically compose the artifact. No model writes this text.&quot;&quot;&quot;
+    assert state.judgment is not None
+    intervention = state.judgment.intervention
+
+    if intervention is Intervention.REVIEW_FOLLOW_UP:
+        opening = &quot;Follow up every completed job with a review request.&quot;
+    else:
+        opening = &quot;Follow up overdue invoices on a fixed weekly rhythm.&quot;
+
+    draft = (
+        f&quot;{opening}\n&quot;
+        &quot;Steps:\n&quot;
+        &quot;1. Trigger on the existing completed-or-paid event.\n&quot;
+        &quot;2. Prepare the message; do not send automatically during the trial.\n&quot;
+        &quot;3. Record who was contacted and suppress anyone who already responded.\n&quot;
+        &quot;If the business owner has not approved the wording, do nothing.\n&quot;
+    )
+    digest = bind_digest(state.run_id, intervention.value, draft)
+    return (
+        state.model_copy(update={&quot;draft&quot;: draft, &quot;draft_digest&quot;: digest}),
+        Transition.TO_VERIFY,
+        {&quot;digest&quot;: digest, &quot;chars&quot;: len(draft)},
+    )
+
+
+def n_verify(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
+    &quot;&quot;&quot;Independent check of the prepared artifact. Fails closed.&quot;&quot;&quot;
+    if not state.draft or not state.draft_digest:
+        raise ValueError(&quot;verify reached without a prepared draft&quot;)
+
+    recomputed = bind_digest(state.run_id, state.judgment.intervention.value, state.draft)
+    problems: list[str] = []
+    if recomputed != state.draft_digest:
+        problems.append(&quot;digest mismatch&quot;)
+    if &quot;automatically&quot; in state.draft and &quot;do not send automatically&quot; not in state.draft:
+        problems.append(&quot;draft implies automatic sending&quot;)
+    if not state.draft.endswith(&quot;\n&quot;):
+        problems.append(&quot;draft must end with a newline for stable hashing&quot;)
+    if &quot;\r&quot; in state.draft:
+        problems.append(&quot;draft contains CR; LF only&quot;)
+
+    if problems:
+        return state, Transition.ESCALATE_VALIDATION, {&quot;problems&quot;: problems}
+
+    return (
+        state,
+        Transition.TO_APPROVE,
+        {&quot;digest&quot;: recomputed, &quot;problems&quot;: []},
+    )
+
+
+def n_await_approval(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
+    &quot;&quot;&quot;Pause point. Nothing happens unless an exact-digest approval exists.&quot;&quot;&quot;
+    if not state.draft_digest:
+        raise ValueError(&quot;approval gate reached without a digest&quot;)
+
+    approval: Approval | None = deps.approvals.find(
+        run_id=state.run_id, draft_digest=state.draft_digest
+    )
+    if approval is None:
+        # Terminal for this pass, not for the run: the approval may arrive later.
+        return state, Transition.ESCALATE_REVIEW, {
+            &quot;reason&quot;: &quot;awaiting exact-draft approval&quot;,
+            &quot;digest&quot;: state.draft_digest,
+        }
+
+    return (
+        state.model_copy(update={&quot;approval_token&quot;: approval.approved_by}),
+        Transition.TO_DONE,
+        {&quot;approved_by&quot;: approval.approved_by, &quot;approved_at&quot;: approval.approved_at},
+    )
+
+
+NODES: tuple[tuple[str, NodeFn], ...] = (
+    (&quot;intake&quot;, n_intake),
+    (&quot;classify&quot;, n_classify),
+    (&quot;route&quot;, n_route),
+    (&quot;prepare&quot;, n_prepare),
+    (&quot;verify&quot;, n_verify),
+    (&quot;await_approval&quot;, n_await_approval),
+)
+
+NEXT_NODE = {
+    Stage.INTAKE: &quot;intake&quot;,
+    Stage.CLASSIFY: &quot;classify&quot;,
+    Stage.ROUTE: &quot;route&quot;,
+    Stage.PREPARE: &quot;prepare&quot;,
+    Stage.VERIFY: &quot;verify&quot;,
+    Stage.APPROVE: &quot;await_approval&quot;,
+}
+
+
+def run_plain(state: RunState, deps: Deps, *, entry: Stage | None = None) -&gt; RunState:
+    &quot;&quot;&quot;Explicit state machine. No framework, no hidden behaviour.
+
+    `entry` names the STAGE to resume from, matching `graph_workflow.run_graph`,
+    so the two drivers have the same call shape.
+    &quot;&quot;&quot;
+    node_name = NEXT_NODE[entry or state.stage]
+    seq = len(deps.log.read())
+
+    while True:
+        if state.terminal is not None:
+            break
+        try:
+            state = state.model_copy(update={&quot;budget&quot;: state.budget.spend()})
+        except BudgetExceeded as exc:
+            state = state.moved(Transition.ESCALATE_BUDGET)
+            deps.log.append(
+                RunEvent(
+                    run_id=state.run_id,
+                    seq=seq,
+                    node=node_name,
+                    stage=state.stage.value,
+                    transition=Transition.ESCALATE_BUDGET.value,
+                    terminal=state.terminal.value if state.terminal else None,
+                    detail={&quot;error&quot;: str(exc)},
+                )
+            )
+            break
+
+        node_fn = dict(NODES)[node_name]
+        try:
+            state, transition, detail = node_fn(state, deps)
+        except IllegalTransition as exc:  # pragma: no cover - defensive
+            deps.log.append(
+                RunEvent(
+                    run_id=state.run_id,
+                    seq=seq,
+                    node=node_name,
+                    stage=state.stage.value,
+                    transition=None,
+                    terminal=None,
+                    detail={&quot;illegal_transition&quot;: str(exc)},
+                )
+            )
+            raise
+
+        before = state.stage
+        state = state.moved(transition)
+        deps.log.append(
+            RunEvent(
+                run_id=state.run_id,
+                seq=seq,
+                node=node_name,
+                stage=before.value,
+                transition=transition.value,
+                terminal=state.terminal.value if state.terminal else None,
+                detail=detail,
+            )
+        )
+        seq += 1
+
+        if state.terminal is not None:
+            break
+        node_name = NEXT_NODE.get(state.stage)
+        if node_name is None:
+            break
+
+    return state
+
+
+def artifact_digest(contact_id: int, subject: str, body: str) -&gt; str:
+    &quot;&quot;&quot;Re-exported so lessons and apps share one binding rule.&quot;&quot;&quot;
+    return canonical_digest(contact_id, subject, body)
+</code></pre>
+      </details>
+      <details>
+        <summary>Show the tests that pin the behaviour</summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;Lesson 02 — the workflow.
+
+These tests are the contract for the plain state machine AND prove that the
+pydantic-graph driver produces identical outcomes.
+
+    .venv/bin/python -m pytest lessons/lesson_02_workflow/test_workflow.py -v
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agent_lab.approvals import ApprovalStore
+from agent_lab.judgment import Intervention, JudgmentError, StubSource
+from agent_lab.runlog import RunLog
+from agent_lab.state import (
+    Budget,
+    IllegalTransition,
+    NotResumable,
+    RunState,
+    Stage,
+    Terminal,
+    Transition,
+)
+from agent_lab.workflow import Deps, artifact_digest, run_plain
+
+
+@pytest.fixture
+def deps(tmp_path: Path):
+    def build(
+        *,
+        tag: str = &quot;run&quot;,
+        intervention: Intervention = Intervention.REVIEW_FOLLOW_UP,
+        confidence: float = 0.99,
+    ) -&gt; Deps:
+        return Deps(
+            judgment=StubSource(intervention=intervention, confidence=confidence),
+            approvals=ApprovalStore(tmp_path / f&quot;{tag}-approvals.jsonl&quot;),
+            log=RunLog(tmp_path / f&quot;{tag}.jsonl&quot;),
+        )
+
+    return build
+
+
+def start(run_id: str = &quot;run&quot;, **kwargs) -&gt; RunState:
+    return RunState(run_id=run_id, assessment_text=&quot;synthetic assessment&quot;, **kwargs)
+
+
+# --------------------------------------------------------------------------
+# Terminals are reachable, and each means something specific.
+# --------------------------------------------------------------------------
+
+
+def test_low_confidence_pauses_for_review(deps) -&gt; None:
+    out = run_plain(start(), deps(confidence=0.42))
+    assert out.terminal is Terminal.NEEDS_REVIEW
+    assert out.stage is Stage.ROUTE
+
+
+def test_no_evidenced_fit_is_rejected(deps) -&gt; None:
+    out = run_plain(start(), deps(intervention=Intervention.NOT_A_FIT))
+    assert out.terminal is Terminal.REJECTED
+
+
+def test_budget_cap_fires_instead_of_looping_forever(deps) -&gt; None:
+    out = run_plain(start(budget=Budget(max_steps=3)), deps())
+    assert out.terminal is Terminal.FAILED_BUDGET
+    assert out.budget.used_steps == 3
+
+
+def test_missing_input_fails_before_any_model_call(deps, tmp_path) -&gt; None:
+    with pytest.raises(ValueError):
+        run_plain(RunState(run_id=&quot;empty&quot;, assessment_text=&quot;   &quot;), deps())
+
+
+# --------------------------------------------------------------------------
+# The approval gate is the whole point: exact artifact, exact digest.
+# --------------------------------------------------------------------------
+
+
+def test_run_pauses_without_approval_and_records_the_digest(deps) -&gt; None:
+    d = deps(tag=&quot;pause&quot;)
+    first = run_plain(start(&quot;pause&quot;), d)
+    assert first.terminal is Terminal.NEEDS_REVIEW
+    assert first.stage is Stage.APPROVE
+    assert first.draft_digest, &quot;a digest must exist so a human can approve THIS version&quot;
+
+
+def test_approval_of_the_exact_digest_completes_the_run(deps) -&gt; None:
+    d = deps(tag=&quot;approve&quot;)
+    first = run_plain(start(&quot;approve&quot;), d)
+    d.approvals.record(run_id=&quot;approve&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.SUCCESS
+    assert second.approval_token == &quot;adam&quot;
+
+
+def test_approval_of_a_different_digest_does_not_unlock(deps) -&gt; None:
+    &quot;&quot;&quot;The failure this guards: approval attached to &#x27;a draft&#x27;, not THIS draft.&quot;&quot;&quot;
+    d = deps(tag=&quot;tamper&quot;)
+    first = run_plain(start(&quot;tamper&quot;), d)
+    other = artifact_digest(1, &quot;invoice follow-up&quot;, &quot;a completely different body&quot;)
+    assert other != first.draft_digest
+    d.approvals.record(run_id=&quot;tamper&quot;, draft_digest=other, approved_by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.NEEDS_REVIEW
+    assert second.approval_token is None
+
+
+def test_approval_from_a_different_run_does_not_unlock(deps) -&gt; None:
+    &quot;&quot;&quot;Same draft text, different run: approval is bound to the run too.&quot;&quot;&quot;
+    d = deps(tag=&quot;crossrun&quot;)
+    first = run_plain(start(&quot;crossrun&quot;), d)
+    d.approvals.record(run_id=&quot;SOME-OTHER-RUN&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+# --------------------------------------------------------------------------
+# Pause vs final: only a pause may be resumed.
+# --------------------------------------------------------------------------
+
+
+def test_only_pausable_terminals_resume() -&gt; None:
+    assert RunState(run_id=&quot;x&quot;, terminal=Terminal.NEEDS_REVIEW).resume().terminal is None
+    for final in (Terminal.REJECTED, Terminal.FAILED_VALIDATION, Terminal.FAILED_BUDGET):
+        with pytest.raises(NotResumable):
+            RunState(run_id=&quot;x&quot;, terminal=final).resume()
+
+
+def test_illegal_transitions_are_refused() -&gt; None:
+    &quot;&quot;&quot;A router bug must raise, not silently produce a plausible-looking run.&quot;&quot;&quot;
+    state = RunState(run_id=&quot;x&quot;)  # stage=INTAKE
+    with pytest.raises(IllegalTransition):
+        state.moved(Transition.TO_PREPARE)
+
+
+# --------------------------------------------------------------------------
+# Evidence: the run log records what actually happened.
+# --------------------------------------------------------------------------
+
+
+def test_run_log_records_every_transition_in_order(deps) -&gt; None:
+    d = deps(tag=&quot;log&quot;)
+    run_plain(start(&quot;log&quot;), d)
+    events = d.log.read()
+
+    assert [e.seq for e in events] == list(range(len(events)))
+    assert [e.node for e in events] == [
+        &quot;intake&quot;,
+        &quot;classify&quot;,
+        &quot;route&quot;,
+        &quot;prepare&quot;,
+        &quot;verify&quot;,
+        &quot;await_approval&quot;,
+    ]
+    assert events[-1].terminal == Terminal.NEEDS_REVIEW.value
+    assert d.log.digest(), &quot;the log must be digestable as evidence&quot;
+
+
+def test_rejecting_leaves_no_draft(deps) -&gt; None:
+    d = deps(tag=&quot;reject&quot;)
+    out = run_plain(start(&quot;reject&quot;), deps(intervention=Intervention.NOT_A_FIT))
+    assert out.draft is None and out.draft_digest is None
+
+
+# --------------------------------------------------------------------------
+# Framework equivalence: the reason both implementations exist.
+# --------------------------------------------------------------------------
+
+
+def test_graph_driver_matches_plain_driver(deps) -&gt; None:
+    from agent_lab.graph_workflow import run_graph
+
+    plain = run_plain(start(&quot;cmp&quot;), deps(tag=&quot;cmp-plain&quot;))
+    graph = run_graph(start(&quot;cmp&quot;), deps(tag=&quot;cmp-graph&quot;))
+
+    assert plain.terminal == graph.terminal
+    assert plain.stage == graph.stage
+    assert plain.draft == graph.draft
+    assert plain.draft_digest == graph.draft_digest
+    assert plain.events == graph.events
+
+
+def test_graph_driver_stops_on_a_terminal(deps) -&gt; None:
+    from agent_lab.graph_workflow import run_graph
+
+    out = run_graph(start(&quot;lowc&quot;), deps(tag=&quot;lowc-graph&quot;, confidence=0.42))
+    assert out.terminal is Terminal.NEEDS_REVIEW
+    assert out.stage is Stage.ROUTE
+
+
+def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
+    from agent_lab.graph_workflow import run_graph
+
+    d_plain, d_graph = deps(tag=&quot;app-plain&quot;), deps(tag=&quot;app-graph&quot;)
+    p1 = run_plain(start(&quot;app&quot;), d_plain)
+    g1 = run_graph(start(&quot;app&quot;), d_graph)
+    assert p1.draft_digest == g1.draft_digest, &quot;identical drafts must hash identically&quot;
+
+    for store_deps, state in ((d_plain, p1), (d_graph, g1)):
+        store_deps.approvals.record(
+            run_id=&quot;app&quot;, draft_digest=state.draft_digest, approved_by=&quot;adam&quot;
+        )
+
+    assert (
+        run_plain(p1.resume(), d_plain, entry=Stage.APPROVE).terminal
+        is run_graph(g1.resume(), d_graph, entry=Stage.APPROVE).terminal
+        is Terminal.SUCCESS
+    )
+</code></pre>
+      </details>
+    </section>
+    <section class="lesson" id="lesson-03">
+      <header class="lesson-head">
+        <span class="badge">Lesson 03</span>
+        <h2>Jev as one node</h2>
+      </header>
+      <p class="why">TypeSafe supplies one narrow typed judgment. Swapping the source — live, recorded, or stub — does not touch the workflow.</p>
+      <ul class="points"><li><b>Validate at the boundary.</b> <code>_build()</code> rejects any option outside the three we defined, before the router sees it.</li>
+<li><b>One coherent judgment per question.</b> A <code>Choice</code> for the intervention plus a <code>Noul</code> for the review-gap signal, batched in a single call.</li>
+<li><b>Replay is offline and stable.</b> A recording is bound to the assessment it was made against, so a replayed run reproduces identical semantics with zero network.</li>
+<li><b>Thresholds live in code.</b> Confidence below 0.60 escalates to review before any artifact is prepared. That number is visible and testable.</li>
+<li><b>Source selection is explicit.</b> <code>AGENT_LAB_JUDGMENT=jev</code>, <code>recorded</code> or <code>stub</code>. It is never guessed.</li></ul>
+      <details>
+        <summary>Show the source: <code>agent_lab/judgment.py</code></summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;Getting a typed judgment into the workflow — three interchangeable sources.
+
+The workflow does not care where the judgment came from. Swapping the source
+is a one-line change, which is what makes deterministic replay possible:
+
+    JevSource()       -&gt; a live call to TypeSafe&#x27;s System One model
+    RecordedSource()  -&gt; replays a previously recorded call (no network)
+    StubSource()      -&gt; a fixed answer for tests
+
+All three return the SAME validated `Judgment` object. If Jev returns
+something that does not validate, we do not silently coerce it — we raise,
+and the graph routes to a terminal failure state.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Protocol
+
+from pydantic import ValidationError
+
+from .state import Intervention, Judgment
+
+# --------------------------------------------------------------------------
+# The question we ask. Keep it narrow: one coherent judgment per question.
+# --------------------------------------------------------------------------
+
+INSTRUCTIONS = (
+    &quot;Which single intervention does the supplied business assessment provide &quot;
+    &quot;explicit evidence for?&quot;
+)
+CRITERIA = {
+    Intervention.REVIEW_FOLLOW_UP.value: (
+        &quot;The evidence shows inconsistent customer review requests after completed &quot;
+        &quot;or paid work.&quot;
+    ),
+    Intervention.PAYMENT_FOLLOW_UP.value: (
+        &quot;The evidence shows overdue or unpaid invoices are the primary operational problem.&quot;
+    ),
+    Intervention.NOT_A_FIT.value: (
+        &quot;The evidence does not support either intervention, or explicitly says the &quot;
+        &quot;current process works.&quot;
+    ),
+}
+GAP_INSTRUCTIONS = (
+    &quot;Does the assessment explicitly evidence a review-request gap after completed work?&quot;
+)
+
+TYPESAFE_MODEL = &quot;jev-latest&quot;
+
+
+class JudgmentError(RuntimeError):
+    &quot;&quot;&quot;The judgment source failed or returned something unusable.&quot;&quot;&quot;
+
+
+class JudgmentSource(Protocol):
+    name: str
+
+    def judge(self, assessment: str) -&gt; Judgment: ...
+
+
+# --------------------------------------------------------------------------
+# Live: TypeSafe System One (Jev)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class JevSource:
+    &quot;&quot;&quot;Live Jev call. Credentials are read from the environment by the SDK.&quot;&quot;&quot;
+
+    model: str = TYPESAFE_MODEL
+    timeout: float = 30.0
+    name: str = field(default=&quot;jev&quot;, init=False)
+    last_usage: dict[str, int] = field(default_factory=dict, init=False)
+
+    def judge(self, assessment: str) -&gt; Judgment:
+        try:
+            from typesafe_sdk import Choice, Noul, TypeSafeClient
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise JudgmentError(&quot;typesafe-sdk is not installed&quot;) from exc
+
+        try:
+            with TypeSafeClient(timeout=self.timeout) as client:
+                response = client.system_one(
+                    state={&quot;assessment&quot;: assessment},
+                    questions={
+                        &quot;intervention&quot;: Choice(
+                            instructions=INSTRUCTIONS, criteria=CRITERIA
+                        ),
+                        &quot;review_gap&quot;: Noul(instructions=GAP_INSTRUCTIONS),
+                    },
+                    model=self.model,
+                )
+        except Exception as exc:  # SDK error types vary across versions
+            raise JudgmentError(f&quot;TypeSafe call failed: {exc}&quot;) from exc
+
+        choice = response.answers[&quot;intervention&quot;]
+        noul = response.answers[&quot;review_gap&quot;]
+        self.last_usage = {
+            &quot;input_tokens&quot;: response.usage.input_tokens,
+            &quot;output_tokens&quot;: response.usage.output_tokens,
+        }
+        return _build(choice.choice, choice.confidence, noul.noul, source=&quot;jev&quot;)
+
+
+# --------------------------------------------------------------------------
+# Replay: a recorded live call (deterministic, offline)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class RecordedSource:
+    &quot;&quot;&quot;Replays a recording. Same interface, zero network, byte-identical result.&quot;&quot;&quot;
+
+    recording_path: Path
+    name: str = field(default=&quot;recorded&quot;, init=False)
+
+    def judge(self, assessment: str) -&gt; Judgment:
+        if not self.recording_path.is_file():
+            raise JudgmentError(f&quot;no recording at {self.recording_path}&quot;)
+        payload = json.loads(self.recording_path.read_text(encoding=&quot;utf-8&quot;))
+        if payload.get(&quot;assessment_sha&quot;) and payload[&quot;assessment_sha&quot;] != _sha(assessment):
+            raise JudgmentError(&quot;recording was made against a different assessment&quot;)
+        return _build(
+            payload[&quot;intervention&quot;],
+            float(payload[&quot;confidence&quot;]),
+            float(payload[&quot;review_gap&quot;]),
+            source=&quot;recorded&quot;,
+        )
+
+
+def _sha(text: str) -&gt; str:
+    import hashlib
+
+    return hashlib.sha256(text.encode(&quot;utf-8&quot;)).hexdigest()
+
+
+@dataclass
+class StubSource:
+    &quot;&quot;&quot;Fixed answer for tests. Makes failures reproducible on purpose.&quot;&quot;&quot;
+
+    intervention: Intervention = Intervention.REVIEW_FOLLOW_UP
+    confidence: float = 0.99
+    review_gap: float = 0.97
+    name: str = field(default=&quot;stub&quot;, init=False)
+
+    def judge(self, assessment: str) -&gt; Judgment:  # noqa: ARG002 - interface symmetry
+        return _build(
+            self.intervention.value,
+            self.confidence,
+            self.review_gap,
+            source=&quot;stub&quot;,
+        )
+
+
+def _build(raw_choice: str, confidence: float, review_gap: float, *, source: str) -&gt; Judgment:
+    &quot;&quot;&quot;Validate before the workflow ever sees it.&quot;&quot;&quot;
+    try:
+        return Judgment(
+            intervention=Intervention(raw_choice),
+            confidence=confidence,
+            review_gap_evidenced=review_gap,
+            source=source,
+        )
+    except (ValidationError, ValueError) as exc:
+        raise JudgmentError(f&quot;judgment failed validation: {exc}&quot;) from exc
+
+
+def source_from_env() -&gt; JudgmentSource:
+    &quot;&quot;&quot;`AGENT_LAB_JUDGMENT=jev|recorded|stub` — explicit, never guessed.&quot;&quot;&quot;
+    selected = os.getenv(&quot;AGENT_LAB_JUDGMENT&quot;, &quot;stub&quot;).strip()
+    recording = Path(
+        os.getenv(&quot;AGENT_LAB_RECORDING&quot;, &quot;recordings/review_follow_up.json&quot;)
+    )
+    if selected == &quot;jev&quot;:
+        return JevSource()
+    if selected == &quot;recorded&quot;:
+        return RecordedSource(recording_path=recording)
+    if selected == &quot;stub&quot;:
+        return StubSource()
+    raise JudgmentError(f&quot;unknown AGENT_LAB_JUDGMENT={selected!r}&quot;)
+</code></pre>
+      </details>
+      <details>
+        <summary>Show the tests that pin the behaviour</summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;Lesson 03 — Jev (TypeSafe) as one node in the workflow.
+
+Three things this lesson proves:
+
+1. A model judgment can be validated into a typed object BEFORE control flow
+   sees it (`Judgment`), so a surprising answer cannot silently become a route.
+2. The same workflow runs with a live Jev call, a recorded replay, or a stub —
+   the node code does not change.
+3. Thresholds live in code, and the graph&#x27;s behaviour changes predictably when
+   confidence falls below them.
+
+Live calls are opt-in:
+
+    AGENT_LAB_JUDGMENT=jev      .venv/bin/python -m pytest lessons/lesson_03_jev -v
+    AGENT_LAB_JUDGMENT=stub     .venv/bin/python -m pytest lessons/lesson_03_jev -v
+
+Default is `stub`, so the suite never spends money or needs a key.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from agent_lab.approvals import ApprovalStore
+from agent_lab.judgment import (
+    CRITERIA,
+    GAP_INSTRUCTIONS,
+    INSTRUCTIONS,
+    Intervention,
+    JevSource,
+    JudgmentError,
+    RecordedSource,
+    StubSource,
+    source_from_env,
+)
+from agent_lab.runlog import RunLog, write_recording
+from agent_lab.state import Intervention as StateIntervention
+from agent_lab.state import Judgment, RunState, Terminal
+from agent_lab.workflow import Deps, run_plain
+
+ASSESSMENT = (
+    &quot;Northside Garden Care (synthetic). Owner plus four field staff in Melbourne. &quot;
+    &quot;Staff mark jobs complete in a field-service app and the owner invoices each &quot;
+    &quot;afternoon; most customers pay within seven days and the owner chases the few &quot;
+    &quot;stragglers every Friday, which is manageable. The real gap is review requests: &quot;
+    &quot;a staff member sometimes texts a customer but there is no trigger, no record of &quot;
+    &quot;who was contacted, and no suppression for customers who already reviewed. The &quot;
+    &quot;owner estimates about three quarters of completed jobs get no review request. &quot;
+    &quot;They want a small pilot this month, want to approve the wording and eligibility &quot;
+    &quot;rules first, and do not want messages sent automatically during the trial.&quot;
+)
+
+
+def _deps(tmp_path: Path, source, tag: str = &quot;jev&quot;) -&gt; Deps:
+    return Deps(
+        judgment=source,
+        approvals=ApprovalStore(tmp_path / f&quot;{tag}-approvals.jsonl&quot;),
+        log=RunLog(tmp_path / f&quot;{tag}.jsonl&quot;),
+    )
+
+
+# --------------------------------------------------------------------------
+# 1. The question is narrow, typed and reviewable — as plain data.
+# --------------------------------------------------------------------------
+
+
+def test_the_question_is_data_not_prose_buried_in_code() -&gt; None:
+    assert set(CRITERIA) == {
+        Intervention.REVIEW_FOLLOW_UP.value,
+        Intervention.PAYMENT_FOLLOW_UP.value,
+        Intervention.NOT_A_FIT.value,
+    }
+    assert &quot;explicit evidence&quot; in INSTRUCTIONS
+    assert &quot;explicitly evidence&quot; in GAP_INSTRUCTIONS
+
+
+# --------------------------------------------------------------------------
+# 2. Validation happens at the boundary.
+# --------------------------------------------------------------------------
+
+
+def test_invalid_judgment_is_rejected_at_the_boundary() -&gt; None:
+    &quot;&quot;&quot;A model returning an option we did not define must not reach the router.&quot;&quot;&quot;
+    with pytest.raises(JudgmentError):
+        from agent_lab.judgment import _build
+
+        _build(&quot;something_else&quot;, 0.9, 0.9, source=&quot;jev&quot;)
+
+
+def test_judgment_is_frozen() -&gt; None:
+    judgment = Judgment(
+        intervention=StateIntervention.REVIEW_FOLLOW_UP,
+        confidence=0.9,
+        review_gap_evidenced=0.9,
+        source=&quot;stub&quot;,
+    )
+    with pytest.raises(Exception):
+        judgment.confidence = 0.1  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------
+# 3. Replay is deterministic and offline.
+# --------------------------------------------------------------------------
+
+
+def test_recorded_source_replays_a_frozen_judgment(tmp_path: Path) -&gt; None:
+    path = write_recording(
+        tmp_path / &quot;rec.json&quot;,
+        assessment=ASSESSMENT,
+        intervention=Intervention.REVIEW_FOLLOW_UP.value,
+        confidence=0.97,
+        review_gap=0.95,
+    )
+    source = RecordedSource(recording_path=path)
+    first = source.judge(ASSESSMENT)
+    second = source.judge(ASSESSMENT)
+
+    assert first == second  # replay is stable
+    assert first.source == &quot;recorded&quot;
+    assert first.intervention is StateIntervention.REVIEW_FOLLOW_UP
+
+
+def test_recording_refuses_a_different_assessment(tmp_path: Path) -&gt; None:
+    path = write_recording(
+        tmp_path / &quot;rec.json&quot;,
+        assessment=&quot;a different business&quot;,
+        intervention=Intervention.REVIEW_FOLLOW_UP.value,
+        confidence=0.9,
+        review_gap=0.9,
+    )
+    with pytest.raises(JudgmentError, match=&quot;different assessment&quot;):
+        RecordedSource(recording_path=path).judge(ASSESSMENT)
+
+
+def test_replayed_run_is_identical_across_two_executions(tmp_path: Path) -&gt; None:
+    &quot;&quot;&quot;The payoff of recording: same inputs, same evidence, byte-identical digest.&quot;&quot;&quot;
+    path = write_recording(
+        tmp_path / &quot;rec.json&quot;,
+        assessment=ASSESSMENT,
+        intervention=Intervention.REVIEW_FOLLOW_UP.value,
+        confidence=0.97,
+        review_gap=0.95,
+    )
+
+    digests = []
+    for tag in (&quot;replay-a&quot;, &quot;replay-b&quot;):
+        deps = _deps(tmp_path, RecordedSource(recording_path=path), tag=tag)
+        out = run_plain(RunState(run_id=&quot;replay&quot;, assessment_text=ASSESSMENT), deps)
+        digests.append((out.draft_digest, out.events))
+
+    assert digests[0] == digests[1]
+
+
+# --------------------------------------------------------------------------
+# 4. Source selection is explicit, never guessed.
+# --------------------------------------------------------------------------
+
+
+def test_source_from_env_rejects_an_unknown_selection(monkeypatch) -&gt; None:
+    monkeypatch.setenv(&quot;AGENT_LAB_JUDGMENT&quot;, &quot;whatever&quot;)
+    with pytest.raises(JudgmentError):
+        source_from_env()
+
+
+def test_source_from_env_defaults_to_stub(monkeypatch) -&gt; None:
+    monkeypatch.delenv(&quot;AGENT_LAB_JUDGMENT&quot;, raising=False)
+    assert source_from_env().name == &quot;stub&quot;
+
+
+def test_stub_source_drives_every_branch(tmp_path: Path) -&gt; None:
+    cases = {
+        Intervention.REVIEW_FOLLOW_UP: Terminal.NEEDS_REVIEW,  # pauses at approval
+        Intervention.PAYMENT_FOLLOW_UP: Terminal.NEEDS_REVIEW,
+        Intervention.NOT_A_FIT: Terminal.REJECTED,
+    }
+    for intervention, expected in cases.items():
+        deps = _deps(
+            tmp_path,
+            StubSource(intervention=intervention, confidence=0.9),
+            tag=intervention.value,
+        )
+        out = run_plain(
+            RunState(run_id=intervention.value, assessment_text=ASSESSMENT), deps
+        )
+        assert out.terminal is expected, intervention
+
+
+def test_low_confidence_escalates_before_preparing(tmp_path: Path) -&gt; None:
+    deps = _deps(tmp_path, StubSource(confidence=0.55), tag=&quot;lowc&quot;)
+    out = run_plain(RunState(run_id=&quot;lowc&quot;, assessment_text=ASSESSMENT), deps)
+    assert out.terminal is Terminal.NEEDS_REVIEW
+    assert out.draft is None, &quot;a low-confidence run must not prepare an artifact&quot;
+
+
+# --------------------------------------------------------------------------
+# 5. Live Jev — opt-in only.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    os.getenv(&quot;AGENT_LAB_JUDGMENT&quot;) != &quot;jev&quot;,
+    reason=&quot;set AGENT_LAB_JUDGMENT=jev to run the live TypeSafe call&quot;,
+)
+def test_live_jev_returns_a_valid_typed_judgment(tmp_path: Path) -&gt; None:
+    source = JevSource()
+    judgment = source.judge(ASSESSMENT)
+
+    assert judgment.source == &quot;jev&quot;
+    assert 0.0 &lt;= judgment.confidence &lt;= 1.0
+    assert 0.0 &lt;= judgment.review_gap_evidenced &lt;= 1.0
+    assert judgment.intervention in set(Intervention)
+    assert source.last_usage.get(&quot;input_tokens&quot;, 0) &gt; 0, &quot;usage must be recorded&quot;
+
+
+@pytest.mark.skipif(
+    os.getenv(&quot;AGENT_LAB_JUDGMENT&quot;) != &quot;jev&quot;,
+    reason=&quot;set AGENT_LAB_JUDGMENT=jev to run the live workflow&quot;,
+)
+def test_live_jev_drives_the_workflow_end_to_end(tmp_path: Path) -&gt; None:
+    deps = _deps(tmp_path, JevSource(), tag=&quot;live&quot;)
+    out = run_plain(
+        RunState(run_id=&quot;live&quot;, assessment_text=ASSESSMENT),
+        deps,
+    )
+    events = deps.log.read()
+
+    assert out.judgment is not None and out.judgment.source == &quot;jev&quot;
+    assert events[1].node == &quot;classify&quot;
+    assert events[1].detail[&quot;usage&quot;][&quot;input_tokens&quot;] &gt; 0
+    assert out.terminal in set(Terminal)
+
+    # Freeze it so the same run is reproducible forever afterwards.
+    if out.judgment is not None:
+        write_recording(
+            tmp_path / &quot;live-recording.json&quot;,
+            assessment=ASSESSMENT,
+            intervention=out.judgment.intervention.value,
+            confidence=out.judgment.confidence,
+            review_gap=out.judgment.review_gap_evidenced,
+            usage=events[1].detail[&quot;usage&quot;],
+        )
+</code></pre>
+      </details>
+    </section>
+    <section class="lesson" id="lesson-04">
+      <header class="lesson-head">
+        <span class="badge">Lesson 04</span>
+        <h2>Same workflow, framework driver</h2>
+      </header>
+      <p class="why">The workflow is written twice on purpose: once as plain Python, once with pydantic-graph. Both must produce identical results.</p>
+      <ul class="points"><li><b>The nodes are one-line delegations.</b> If a framework made you rewrite your logic, that is a signal, not a feature.</li>
+<li><b>Constraint 1:</b> <code>from __future__ import annotations</code> is required, because <code>run()</code>'s return annotation names nodes defined later in the file.</li>
+<li><b>Constraint 2:</b> the graph is handed a node <em>instance</em>. A graph executes a node object; it does not call a function to start.</li>
+<li><b>Constraint 3:</b> graph state must be mutable and mutated in place — pydantic-graph builds a fresh context per node, so rebinding <code>ctx.state</code> is discarded. Our frozen state is wrapped in a small mutable holder.</li>
+<li><b>What the framework adds:</b> structural validation and a rendered diagram. What it does not add: your semantics.</li></ul>
+      <details>
+        <summary>Show the source: <code>agent_lab/graph_workflow.py</code></summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;The SAME workflow expressed with pydantic-graph.
+
+Read this *after* `workflow.py`. Every node body here delegates to the plain
+node functions; the framework contributes structure, not logic.
+
+Three real pydantic-graph constraints, each learned from an actual failure
+while writing this file:
+
+1. `from __future__ import annotations` is REQUIRED. The `run()` return
+   annotation names nodes defined later in the file; without postponed
+   evaluation Python raises `NameError` at class-creation time.
+
+2. The graph must be handed a first node INSTANCE (`inputs=`), because a graph
+   executes a node object; it does not call a function to start.
+
+3. The graph&#x27;s state must be MUTABLE and mutated in place. pydantic-graph
+   constructs a NEW `GraphRunContext` for each node, so `ctx.state = &lt;new
+   object&gt;` is silently discarded. Our `RunState` is deliberately frozen, so
+   it is wrapped in a small mutable holder and assigned into.
+
+Point 3 is the argument for writing the plain version first: framework state
+semantics are what bite, and they are obvious only once you already know what
+correct looks like.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+
+from pydantic_graph import BaseNode, End, GraphBuilder, GraphRunContext
+
+from .state import RunState, Stage, Transition
+from .workflow import (
+    Deps,
+    NodeFn,
+    n_await_approval,
+    n_classify,
+    n_intake,
+    n_prepare,
+    n_route,
+    n_verify,
+)
+
+
+@dataclass
+class GraphState:
+    &quot;&quot;&quot;Mutable holder so a frozen `RunState` can be replaced in place.&quot;&quot;&quot;
+
+    current: RunState
+
+
+Outcome = RunState
+
+
+def _advance(
+    holder: GraphState,
+    deps: Deps,
+    node_fn: NodeFn,
+) -&gt; RunState:
+    &quot;&quot;&quot;Run one plain node, apply its declared transition, store the result.
+
+    Identical to what the plain runner&#x27;s loop does — which is exactly the
+    point: the graph is a different *driver* for the same semantics.
+    &quot;&quot;&quot;
+    state, transition, _detail = node_fn(holder.current, deps)
+    holder.current = state.moved(transition)
+    return holder.current
+
+
+@dataclass
+class Intake(BaseNode[GraphState, Deps, Outcome]):
+    &quot;&quot;&quot;Validates input, then dispatches to the node the typed stage names.
+
+    Re-entry lives HERE rather than as a second graph entry point. A
+    pydantic-graph graph has one start; resuming a paused run is a matter of
+    the typed state saying where it stopped, which is deterministic and
+    inspectable. It also keeps structural validation meaningful.
+    &quot;&quot;&quot;
+
+    async def run(
+        self, ctx: GraphRunContext[GraphState, Deps]
+    ) -&gt; Classify | AwaitApproval:
+        if ctx.state.current.stage is Stage.APPROVE:
+            return AwaitApproval()
+        _advance(ctx.state, ctx.deps, n_intake)
+        return Classify()
+
+
+@dataclass
+class Classify(BaseNode[GraphState, Deps, Outcome]):
+    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Route | End[Outcome]:
+        _advance(ctx.state, ctx.deps, n_classify)
+        return Route()
+
+
+@dataclass
+class Route(BaseNode[GraphState, Deps, Outcome]):
+    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Prepare | End[Outcome]:
+        state = _advance(ctx.state, ctx.deps, n_route)
+        if state.terminal is not None:
+            return End(state)
+        return Prepare()
+
+
+@dataclass
+class Prepare(BaseNode[GraphState, Deps, Outcome]):
+    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Verify:
+        _advance(ctx.state, ctx.deps, n_prepare)
+        return Verify()
+
+
+@dataclass
+class Verify(BaseNode[GraphState, Deps, Outcome]):
+    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; AwaitApproval | End[Outcome]:
+        state = _advance(ctx.state, ctx.deps, n_verify)
+        if state.terminal is not None:
+            return End(state)
+        return AwaitApproval()
+
+
+@dataclass
+class AwaitApproval(BaseNode[GraphState, Deps, Outcome]):
+    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; End[Outcome]:
+        return End(_advance(ctx.state, ctx.deps, n_await_approval))
+
+
+NODE_BY_STAGE = {
+    Stage.INTAKE: Intake,
+    Stage.CLASSIFY: Classify,
+    Stage.ROUTE: Route,
+    Stage.PREPARE: Prepare,
+    Stage.VERIFY: Verify,
+    Stage.APPROVE: AwaitApproval,
+}
+
+
+def _add_all(builder) -&gt; None:
+    &quot;&quot;&quot;Wire the single graph entry, then every node&#x27;s own outgoing edges.&quot;&quot;&quot;
+    builder.add(builder.edge_from(builder.start_node).to(Intake))
+    # Each node&#x27;s `run` return annotation supplies its own outgoing edges.
+    for node_type in (Intake, Classify, Route, Prepare, Verify, AwaitApproval):
+        builder.add(builder.node(node_type))
+
+
+def build_graph():
+    &quot;&quot;&quot;Explicit wiring: start -&gt; Intake, then declared return annotations.&quot;&quot;&quot;
+    builder = GraphBuilder(state_type=GraphState, deps_type=Deps, output_type=Outcome)
+    _add_all(builder)
+    return builder.build()
+
+
+def run_graph(state: RunState, deps: Deps, *, entry: Stage | None = None) -&gt; RunState:
+    &quot;&quot;&quot;Run the framework graph; returns the same `RunState` type as `run_plain`.
+
+    `entry` only sets the stage the typed state claims; `Intake` performs the
+    dispatch. Both drivers therefore honour the same rule.
+    &quot;&quot;&quot;
+    resumed = state if entry is None else state.model_copy(update={&quot;stage&quot;: entry})
+    holder = GraphState(current=resumed)
+    build_graph().run_sync(state=holder, deps=deps, inputs=Intake())
+    return holder.current
+
+
+def transition_for(node_fn: Callable) -&gt; Transition:
+    &quot;&quot;&quot;Exposed for lesson 06: proves the two runners agree edge-for-edge.&quot;&quot;&quot;
+    return TRANSITIONS_BY_NODE[node_fn.__name__]
+
+
+TRANSITIONS_BY_NODE: dict[str, Transition] = {
+    &quot;n_intake&quot;: Transition.TO_CLASSIFY,
+    &quot;n_classify&quot;: Transition.TO_ROUTE,
+    &quot;n_route&quot;: Transition.TO_PREPARE,
+    &quot;n_prepare&quot;: Transition.TO_VERIFY,
+    &quot;n_verify&quot;: Transition.TO_APPROVE,
+    &quot;n_await_approval&quot;: Transition.TO_DONE,
+}
+</code></pre>
+      </details>
+      <details>
+        <summary>Show the tests that pin the behaviour</summary>
+        <pre class="code" data-lang="python"><code>&quot;&quot;&quot;Lesson 02 — the workflow.
+
+These tests are the contract for the plain state machine AND prove that the
+pydantic-graph driver produces identical outcomes.
+
+    .venv/bin/python -m pytest lessons/lesson_02_workflow/test_workflow.py -v
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agent_lab.approvals import ApprovalStore
+from agent_lab.judgment import Intervention, JudgmentError, StubSource
+from agent_lab.runlog import RunLog
+from agent_lab.state import (
+    Budget,
+    IllegalTransition,
+    NotResumable,
+    RunState,
+    Stage,
+    Terminal,
+    Transition,
+)
+from agent_lab.workflow import Deps, artifact_digest, run_plain
+
+
+@pytest.fixture
+def deps(tmp_path: Path):
+    def build(
+        *,
+        tag: str = &quot;run&quot;,
+        intervention: Intervention = Intervention.REVIEW_FOLLOW_UP,
+        confidence: float = 0.99,
+    ) -&gt; Deps:
+        return Deps(
+            judgment=StubSource(intervention=intervention, confidence=confidence),
+            approvals=ApprovalStore(tmp_path / f&quot;{tag}-approvals.jsonl&quot;),
+            log=RunLog(tmp_path / f&quot;{tag}.jsonl&quot;),
+        )
+
+    return build
+
+
+def start(run_id: str = &quot;run&quot;, **kwargs) -&gt; RunState:
+    return RunState(run_id=run_id, assessment_text=&quot;synthetic assessment&quot;, **kwargs)
+
+
+# --------------------------------------------------------------------------
+# Terminals are reachable, and each means something specific.
+# --------------------------------------------------------------------------
+
+
+def test_low_confidence_pauses_for_review(deps) -&gt; None:
+    out = run_plain(start(), deps(confidence=0.42))
+    assert out.terminal is Terminal.NEEDS_REVIEW
+    assert out.stage is Stage.ROUTE
+
+
+def test_no_evidenced_fit_is_rejected(deps) -&gt; None:
+    out = run_plain(start(), deps(intervention=Intervention.NOT_A_FIT))
+    assert out.terminal is Terminal.REJECTED
+
+
+def test_budget_cap_fires_instead_of_looping_forever(deps) -&gt; None:
+    out = run_plain(start(budget=Budget(max_steps=3)), deps())
+    assert out.terminal is Terminal.FAILED_BUDGET
+    assert out.budget.used_steps == 3
+
+
+def test_missing_input_fails_before_any_model_call(deps, tmp_path) -&gt; None:
+    with pytest.raises(ValueError):
+        run_plain(RunState(run_id=&quot;empty&quot;, assessment_text=&quot;   &quot;), deps())
+
+
+# --------------------------------------------------------------------------
+# The approval gate is the whole point: exact artifact, exact digest.
+# --------------------------------------------------------------------------
+
+
+def test_run_pauses_without_approval_and_records_the_digest(deps) -&gt; None:
+    d = deps(tag=&quot;pause&quot;)
+    first = run_plain(start(&quot;pause&quot;), d)
+    assert first.terminal is Terminal.NEEDS_REVIEW
+    assert first.stage is Stage.APPROVE
+    assert first.draft_digest, &quot;a digest must exist so a human can approve THIS version&quot;
+
+
+def test_approval_of_the_exact_digest_completes_the_run(deps) -&gt; None:
+    d = deps(tag=&quot;approve&quot;)
+    first = run_plain(start(&quot;approve&quot;), d)
+    d.approvals.record(run_id=&quot;approve&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.SUCCESS
+    assert second.approval_token == &quot;adam&quot;
+
+
+def test_approval_of_a_different_digest_does_not_unlock(deps) -&gt; None:
+    &quot;&quot;&quot;The failure this guards: approval attached to &#x27;a draft&#x27;, not THIS draft.&quot;&quot;&quot;
+    d = deps(tag=&quot;tamper&quot;)
+    first = run_plain(start(&quot;tamper&quot;), d)
+    other = artifact_digest(1, &quot;invoice follow-up&quot;, &quot;a completely different body&quot;)
+    assert other != first.draft_digest
+    d.approvals.record(run_id=&quot;tamper&quot;, draft_digest=other, approved_by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.NEEDS_REVIEW
+    assert second.approval_token is None
+
+
+def test_approval_from_a_different_run_does_not_unlock(deps) -&gt; None:
+    &quot;&quot;&quot;Same draft text, different run: approval is bound to the run too.&quot;&quot;&quot;
+    d = deps(tag=&quot;crossrun&quot;)
+    first = run_plain(start(&quot;crossrun&quot;), d)
+    d.approvals.record(run_id=&quot;SOME-OTHER-RUN&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+# --------------------------------------------------------------------------
+# Pause vs final: only a pause may be resumed.
+# --------------------------------------------------------------------------
+
+
+def test_only_pausable_terminals_resume() -&gt; None:
+    assert RunState(run_id=&quot;x&quot;, terminal=Terminal.NEEDS_REVIEW).resume().terminal is None
+    for final in (Terminal.REJECTED, Terminal.FAILED_VALIDATION, Terminal.FAILED_BUDGET):
+        with pytest.raises(NotResumable):
+            RunState(run_id=&quot;x&quot;, terminal=final).resume()
+
+
+def test_illegal_transitions_are_refused() -&gt; None:
+    &quot;&quot;&quot;A router bug must raise, not silently produce a plausible-looking run.&quot;&quot;&quot;
+    state = RunState(run_id=&quot;x&quot;)  # stage=INTAKE
+    with pytest.raises(IllegalTransition):
+        state.moved(Transition.TO_PREPARE)
+
+
+# --------------------------------------------------------------------------
+# Evidence: the run log records what actually happened.
+# --------------------------------------------------------------------------
+
+
+def test_run_log_records_every_transition_in_order(deps) -&gt; None:
+    d = deps(tag=&quot;log&quot;)
+    run_plain(start(&quot;log&quot;), d)
+    events = d.log.read()
+
+    assert [e.seq for e in events] == list(range(len(events)))
+    assert [e.node for e in events] == [
+        &quot;intake&quot;,
+        &quot;classify&quot;,
+        &quot;route&quot;,
+        &quot;prepare&quot;,
+        &quot;verify&quot;,
+        &quot;await_approval&quot;,
+    ]
+    assert events[-1].terminal == Terminal.NEEDS_REVIEW.value
+    assert d.log.digest(), &quot;the log must be digestable as evidence&quot;
+
+
+def test_rejecting_leaves_no_draft(deps) -&gt; None:
+    d = deps(tag=&quot;reject&quot;)
+    out = run_plain(start(&quot;reject&quot;), deps(intervention=Intervention.NOT_A_FIT))
+    assert out.draft is None and out.draft_digest is None
+
+
+# --------------------------------------------------------------------------
+# Framework equivalence: the reason both implementations exist.
+# --------------------------------------------------------------------------
+
+
+def test_graph_driver_matches_plain_driver(deps) -&gt; None:
+    from agent_lab.graph_workflow import run_graph
+
+    plain = run_plain(start(&quot;cmp&quot;), deps(tag=&quot;cmp-plain&quot;))
+    graph = run_graph(start(&quot;cmp&quot;), deps(tag=&quot;cmp-graph&quot;))
+
+    assert plain.terminal == graph.terminal
+    assert plain.stage == graph.stage
+    assert plain.draft == graph.draft
+    assert plain.draft_digest == graph.draft_digest
+    assert plain.events == graph.events
+
+
+def test_graph_driver_stops_on_a_terminal(deps) -&gt; None:
+    from agent_lab.graph_workflow import run_graph
+
+    out = run_graph(start(&quot;lowc&quot;), deps(tag=&quot;lowc-graph&quot;, confidence=0.42))
+    assert out.terminal is Terminal.NEEDS_REVIEW
+    assert out.stage is Stage.ROUTE
+
+
+def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
+    from agent_lab.graph_workflow import run_graph
+
+    d_plain, d_graph = deps(tag=&quot;app-plain&quot;), deps(tag=&quot;app-graph&quot;)
+    p1 = run_plain(start(&quot;app&quot;), d_plain)
+    g1 = run_graph(start(&quot;app&quot;), d_graph)
+    assert p1.draft_digest == g1.draft_digest, &quot;identical drafts must hash identically&quot;
+
+    for store_deps, state in ((d_plain, p1), (d_graph, g1)):
+        store_deps.approvals.record(
+            run_id=&quot;app&quot;, draft_digest=state.draft_digest, approved_by=&quot;adam&quot;
+        )
+
+    assert (
+        run_plain(p1.resume(), d_plain, entry=Stage.APPROVE).terminal
+        is run_graph(g1.resume(), d_graph, entry=Stage.APPROVE).terminal
+        is Terminal.SUCCESS
+    )
+</code></pre>
+      </details>
+    </section>
+
+<section class="lesson" id="evidence">
+  <div class="lesson-head"><span class="badge">Evidence</span><h2>Live evidence from this machine</h2></div>
+  <p class="why">Real output, captured by <code>scripts/build_walkthrough.py</code>
+  when this page was generated.</p>
+
+  <h3>Tests</h3>
+  <div class="out">.....................................ss                                  [100%]
+37 passed, 2 skipped in 0.10s</div>
+
+  <h3>Live Jev run, frozen for replay, then replayed</h3>
+  <div class="out">====================================================================
+LIVE JEV JUDGMENT
+====================================================================
+  intervention      : review_follow_up
+  confidence        : 1.000
+  review_gap signal : 0.970
+  usage             : {&#x27;input_tokens&#x27;: 655, &#x27;output_tokens&#x27;: 66}
+
+====================================================================
+RUN LOG (what actually happened, in order)
+====================================================================
+  seq0  intake          intake-&gt;classify             terminal=None
+  seq1  classify        classify-&gt;route              terminal=None
+  seq2  route           route-&gt;prepare               terminal=None
+  seq3  prepare         prepare-&gt;verify              terminal=None
+  seq4  verify          verify-&gt;awaiting_approval    terminal=None
+  seq5  await_approval  route-&gt;needs_review          terminal=NEEDS_REVIEW
+  seq6  await_approval  route-&gt;needs_review          terminal=NEEDS_REVIEW
+  seq7  await_approval  awaiting_approval-&gt;done      terminal=SUCCESS
+  seq8  intake          intake-&gt;classify             terminal=None
+  seq9  classify        classify-&gt;route              terminal=None
+  seq10  route           route-&gt;prepare               terminal=None
+  seq11  prepare         prepare-&gt;verify              terminal=None
+  seq12  verify          verify-&gt;awaiting_approval    terminal=None
+  seq13  await_approval  awaiting_approval-&gt;done      terminal=SUCCESS
+
+====================================================================
+OUTCOME
+====================================================================
+  terminal   : SUCCESS
+  stage      : done
+  steps used : 6/12
+  digest     : ba070a340844a1b144869c42fd9275097c1c488897461284a596898b72f09e5f
+  log digest : bdc5dbc76f55b082b313c79987bf6f9b...
+
+  frozen to  : recordings/northside-garden-care.json
+  replay identical to live run: False</div>
+
+  <h3>The graph the framework builds</h3>
+  <div class="out">stateDiagram-v2
+  Intake
+  state decision &lt;&lt;choice&gt;&gt;
+  AwaitApproval
+  Classify
+  state decision_2 &lt;&lt;choice&gt;&gt;
+  Route
+  state decision_3 &lt;&lt;choice&gt;&gt;
+  Prepare
+  Verify
+  state decision_4 &lt;&lt;choice&gt;&gt;
+
+  [*] --&gt; Intake
+  Intake --&gt; decision
+  decision --&gt; AwaitApproval
+  decision --&gt; Classify
+  AwaitApproval --&gt; [*]
+  Classify --&gt; decision_2
+  decision_2 --&gt; [*]
+  decision_2 --&gt; Route
+  Route --&gt; decision_3
+  decision_3 --&gt; [*]
+  decision_3 --&gt; Prepare
+  Prepare --&gt; Verify
+  Verify --&gt; decision_4
+  decision_4 --&gt; AwaitApproval
+  decision_4 --&gt; [*]</div>
+</section>
+
+<section class="lesson" id="limits">
+  <div class="lesson-head"><span class="badge">Limits</span><h2>Honest limits</h2></div>
+  <ul class="points">
+    <li>This is a teaching lab, not production infrastructure. There is no
+    checkpoint store, no distributed workers, no crash recovery across
+    machines, and no tracing backend.</li>
+    <li>The approval store is an append-only local file. It records who was
+    named as approver; it does not authenticate them.</li>
+    <li>The stub and recorded sources make behaviour deterministic; a live Jev
+    call may differ run to run. Only <code>recorded</code> is replay-stable.</li>
+    <li>Thresholds (0.60 confidence) are illustrative. Real thresholds need
+    labelled examples from your own traffic.</li>
+    <li>The synthetic case is invented test data. No real business, prospect or
+    client information is in this lab.</li>
+  </ul>
+  <div class="callout warn">
+    <b>Never delegated to the model in this design:</b> permission checks,
+    arithmetic, source truth, approval, sending, and every irreversible action.
+  </div>
+</section>
+
+<footer>
+  Regenerate this page with <code>.venv/bin/python scripts/build_walkthrough.py</code>.
+  The code samples, test output and graph diagram are read from the lab at build
+  time, so the page cannot drift from it.
+</footer>
+
+</div>
+</body>
+</html>

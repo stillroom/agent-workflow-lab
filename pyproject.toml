@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-workflow-lab"
+version = "0.1.0"
+description = "A small, readable agent workflow: typed state, explicit transitions, one Jev judgment, and a human approval gate."
+readme = "README.md"
+requires-python = ">=3.10"
+# Bounds follow the Hermes dependency-pinning policy: >=floor,<next_major.
+dependencies = [
+    "pydantic>=2.13,<3",
+    "pydantic-graph>=2.44,<3",
+    "typesafe-sdk>=0.6,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10"]
+
+[tool.setuptools]
+packages = ["agent_lab"]
+
+[tool.pytest.ini_options]
+# `pythonpath` puts the repo root on sys.path so `import agent_lab` works
+# regardless of the directory pytest is invoked from. Verified by running the
+# suite from /tmp. Without this, only a repo-root invocation passes.
+pythonpath = ["."]
+testpaths = ["lessons"]
+addopts = "-ra"
+filterwarnings = ["error::DeprecationWarning:agent_lab.*"]

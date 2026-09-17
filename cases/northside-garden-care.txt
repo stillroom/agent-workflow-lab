@@ -1,0 +1,21 @@
+Northside Garden Care (synthetic test business, not a real client).
+
+Owner plus four field staff, Melbourne. Staff mark garden-maintenance jobs
+complete in a field-service app. The owner raises invoices from the same system
+each afternoon. Most customers pay by bank transfer within seven days. The owner
+checks overdue invoices every Friday and personally follows up the small number
+that remain unpaid. This process is currently manageable and the owner has not
+asked to change it.
+
+The business receives warm recommendations and has many satisfied repeat
+customers, but review requests are inconsistent. A staff member sometimes
+remembers to send a generic text message after a job, but there is no reliable
+trigger, no record of who was contacted, and no suppression for customers who
+already reviewed the business. The owner estimates that around three quarters of
+completed jobs receive no review request at all.
+
+The owner wants a simple process that prepares a polite review-request message
+after a paid job. They want to approve the wording and the eligible customer
+rules before the first use. They do not want messages sent automatically during
+the trial. They would like to discuss a small pilot this month, but say there is
+no emergency and normal work should continue while it is considered.
