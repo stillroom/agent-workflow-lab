@@ -138,9 +138,15 @@ def run(cmd: list[str]) -> str:
     return (result.stdout + result.stderr).strip()
 
 
-def build() -> Path:
+def build(live_run: bool = False) -> Path:
     tests = run([".venv/bin/python", "-m", "pytest", "lessons", "-q"])
-    live = run([".venv/bin/python", "scripts/live_jev_demo.py"])
+    # Offline by default: the committed recording replays the frozen judgment, so
+    # generating documentation needs no credentials and cannot spend anything.
+    # `--live` refreshes that recording with a real call.
+    live_output = run(
+        [".venv/bin/python", "scripts/live_jev_demo.py"]
+        + (["--live"] if live_run else [])
+    )
     graph = run(
         [
             ".venv/bin/python",
@@ -335,8 +341,8 @@ await_approval:  exact digest approved  ->  SUCCESS
   <h3>Tests</h3>
   <div class="out">{html.escape(tests)}</div>
 
-  <h3>Live Jev run, frozen for replay, then replayed</h3>
-  <div class="out">{html.escape(live)}</div>
+  <h3>{'Live Jev call, frozen for replay, then replayed' if live_run else 'Frozen Jev run, replayed from the committed recording'}</h3>
+  <div class="out">{html.escape(live_output)}</div>
 
   <h3>The graph the framework builds</h3>
   <div class="out">{html.escape(graph)}</div>
@@ -385,7 +391,9 @@ await_approval:  exact digest approved  ->  SUCCESS
 
 
 if __name__ == "__main__":
-    path = build()
+    use_live = "--live" in sys.argv[1:]
+    path = build(live_run=use_live)
     size = path.stat().st_size
-    print(f"wrote {path} ({size:,} bytes)")
+    mode = "live Jev call" if use_live else "offline replay, no key needed"
+    print(f"wrote {path} ({size:,} bytes) using {mode}")
     sys.exit(0)
