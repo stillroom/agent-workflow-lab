@@ -43,44 +43,39 @@ def main() -> int:
     print(f"draft_digest : {digest}")
     print()
 
+    assessment = (ROOT / "cases" / "northside-garden-care.txt").read_text(encoding="utf-8")
     approvals = ApprovalStore(run_dir / "approvals.jsonl")
 
-    # Rebuild the paused state: same typed state, same frozen judgment, same log.
-    assessment = (ROOT / "cases" / "northside-garden-care.txt").read_text(encoding="utf-8")
-    paused_state = RunState(
-        run_id=run_id,
-        stage=Stage.APPROVE,
-        draft=run_dir.joinpath("draft.txt").read_text(encoding="utf-8")
-        if (run_dir / "draft.txt").is_file()
-        else None,
-        draft_digest=digest,
-    )
-    if paused_state.draft is None:
-        # Recompute deterministically from the frozen judgment (offline replay).
-        deps = Deps(
+    def rebuild() -> Deps:
+        """A fresh dependency set per pass, so each pass logs its own events."""
+        return Deps(
             judgment=RecordedSource(recording_path=recording),
             approvals=approvals,
             log=RunLog(run_dir / "run.jsonl"),
         )
-        rebuilt = run_plain(
-            RunState(run_id=run_id, assessment_text=assessment), deps
-        )
-        paused_state = rebuilt
 
-    print("--- without an approval ---")
-    deps = Deps(
-        judgment=RecordedSource(recording_path=recording),
-        approvals=approvals,
-        log=RunLog(run_dir / "run.jsonl"),
-    )
-    blocked = run_plain(paused_state.resume(), deps, entry=Stage.APPROVE)
+    # Rebuild the paused state deterministically from the recording. The run log
+    # and the frozen judgment are durable; `draft.txt` is presentation only and is
+    # compared rather than trusted, so an edited file cannot smuggle itself past
+    # the gate. The gate also re-derives the digest from the draft it is handed,
+    # so the logged digest above is for display, not authority.
+    paused_state = run_plain(RunState(run_id=run_id, assessment_text=assessment), rebuild())
+
+    on_disk = run_dir / "draft.txt"
+    if on_disk.is_file() and on_disk.read_text(encoding="utf-8") != paused_state.draft:
+        print("  note: runs/.../draft.txt differs from the rebuilt draft.")
+        print("        The rebuilt draft is authoritative; the edited file is ignored.")
+        print()
+
+    print("--- without a decision ---")
+    blocked = run_plain(paused_state.resume(), rebuild(), entry=Stage.APPROVE)
     print(f"terminal={blocked.terminal.value}  (expected NEEDS_REVIEW)")
 
     print()
     print("--- recording approval of THIS digest ---")
-    approvals.record(run_id=run_id, draft_digest=digest, approved_by="adam")
-    resumed = run_plain(paused_state.resume(), deps, entry=Stage.APPROVE)
-    print(f"terminal={resumed.terminal.value}  approved_by={resumed.approval_token}")
+    approvals.approve(run_id=run_id, draft_digest=paused_state.draft_digest, by="adam")
+    resumed = run_plain(paused_state.resume(), rebuild(), entry=Stage.APPROVE)
+    print(f"terminal={resumed.terminal.value}  decided_by={resumed.approval_token}")
     print()
     print("Nothing was sent, published or deployed. The gate only unlocked a terminal state.")
     return 0
