@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 runs/
-recordings/
 
 # Secrets: .env holds a pointer or a key. Only the template is committed.
 .env

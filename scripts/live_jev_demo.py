@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Live proof: one Jev call drives the workflow, then gets frozen for replay.
+"""One Jev judgment drives the workflow, then gets frozen for replay.
 
-    .venv/bin/python scripts/live_jev_demo.py
+    .venv/bin/python scripts/live_jev_demo.py            # replay the recording
+    .venv/bin/python scripts/live_jev_demo.py --live      # call Jev, refresh it
 
-Prints the judgment, the route taken, the artifact digest, the run log, and
-writes `recordings/<case>.json` so the identical run can be replayed offline.
+The default is offline and needs no credentials: it replays the committed
+recording in `recordings/`, so a fresh clone can reproduce the whole run.
+
+`--live` makes a real call, spends real tokens, and overwrites the recording.
+That is the only mode that needs `TYPESAFE_API_KEY`, and the only mode that
+writes to `recordings/`. Nothing here ever deletes it.
 """
 
 from __future__ import annotations
@@ -23,6 +28,9 @@ from agent_lab.runlog import RunLog, write_recording  # noqa: E402
 from agent_lab.state import RunState, Terminal  # noqa: E402
 from agent_lab.workflow import Deps, run_plain  # noqa: E402
 
+CASE = "northside-garden-care"
+RUN_ID = "live-demo"
+
 
 def load_key() -> None:
     """Resolve TYPESAFE_API_KEY from the environment or a configured env file.
@@ -35,27 +43,50 @@ def load_key() -> None:
         raise SystemExit(str(exc)) from exc
 
 
-def main() -> int:
-    load_key()
+def _scratch(name: str) -> Path:
+    """A clean scratch directory for one pass.
 
-    case_path = ROOT / "cases" / "northside-garden-care.txt"
-    assessment = case_path.read_text(encoding="utf-8")
-    run_id = "live-demo"
+    `runs/` is disposable, and `seq` counts this run's existing events, so a
+    stale directory would make two passes of the same run disagree for no real
+    reason. Only this demo's own scratch is ever cleared.
+    """
+    path = ROOT / "runs" / name
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-    work = ROOT / "runs" / run_id
-    # Start from a clean directory: the run log is append-only, and `seq` counts
-    # the events already on disk, so accumulating across invocations would make
-    # this run's sequence numbers differ from the replay's for no real reason.
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True, exist_ok=True)
 
+def _run(source, work: Path, assessment: str):
     deps = Deps(
-        judgment=JevSource(),
+        judgment=source,
         approvals=ApprovalStore(work / "approvals.jsonl"),
         log=RunLog(work / "run.jsonl"),
     )
+    state = run_plain(RunState(run_id=RUN_ID, assessment_text=assessment), deps)
+    return state, deps
 
-    state = run_plain(RunState(run_id=run_id, assessment_text=assessment), deps)
+
+def main(argv: list[str]) -> int:
+    live = "--live" in argv
+    recording = ROOT / "recordings" / f"{CASE}.json"
+
+    if live:
+        load_key()
+        source = JevSource()
+        origin = "LIVE JEV CALL (a real call, real tokens)"
+    else:
+        if not recording.is_file():
+            raise SystemExit(
+                f"no recording at {recording.relative_to(ROOT)} to replay. "
+                f"Run with --live once to create it."
+            )
+        source = RecordedSource(recording_path=recording)
+        origin = f"REPLAYED FROM {recording.relative_to(ROOT)} (no network, no key)"
+
+    assessment = (ROOT / "cases" / f"{CASE}.txt").read_text(encoding="utf-8")
+
+    work = _scratch(RUN_ID)
+    state, deps = _run(source, work, assessment)
     judgment = state.judgment
     assert judgment is not None
 
@@ -66,8 +97,9 @@ def main() -> int:
     classify_detail = next(e.detail for e in events if e.node == "classify")
 
     print("=" * 68)
-    print("LIVE JEV JUDGMENT")
+    print("JEV JUDGMENT")
     print("=" * 68)
+    print(f"  source            : {origin}")
     print(f"  intervention      : {judgment.intervention.value}")
     print(f"  confidence        : {judgment.confidence:.3f}")
     print(f"  review_gap signal : {judgment.review_gap_evidenced:.3f}")
@@ -91,32 +123,32 @@ def main() -> int:
     print(f"  digest     : {state.draft_digest}")
     print(f"  log digest : {deps.log.digest()[:32]}...")
 
-    recording = write_recording(
-        ROOT / "recordings" / "northside-garden-care.json",
-        assessment=assessment,
-        intervention=judgment.intervention.value,
-        confidence=judgment.confidence,
-        review_gap=judgment.review_gap_evidenced,
-        usage=classify_detail["usage"],
-    )
-    print(f"\n  frozen to  : {recording.relative_to(ROOT)}")
+    if live:
+        written = write_recording(
+            recording,
+            assessment=assessment,
+            intervention=judgment.intervention.value,
+            confidence=judgment.confidence,
+            review_gap=judgment.review_gap_evidenced,
+            usage=classify_detail["usage"],
+        )
+        print(f"\n  frozen to  : {written.relative_to(ROOT)} (refreshed)")
 
-    # Replay the frozen judgment and confirm identical semantics, offline.
-    replay_dir = ROOT / "runs" / f"{run_id}-replay"
-    shutil.rmtree(replay_dir, ignore_errors=True)
-    replay_deps = Deps(
-        judgment=RecordedSource(recording_path=recording),
-        approvals=ApprovalStore(replay_dir / "approvals.jsonl"),
-        log=RunLog(replay_dir / "run.jsonl"),
+    # Second pass from the recording, and compare. Offline either way.
+    replay_deps_dir = _scratch(f"{RUN_ID}-replay")
+    replay, replay_deps = _run(
+        RecordedSource(recording_path=recording), replay_deps_dir, assessment
     )
-    replay = run_plain(RunState(run_id=run_id, assessment_text=assessment), replay_deps)
     same = (
         replay.terminal is state.terminal
         and replay.draft == state.draft
         and replay.draft_digest == state.draft_digest
         and replay.events == state.events
     )
-    print(f"  replay identical to live run: {same}")
+    if live:
+        print(f"  replay of the fresh recording is identical: {same}")
+    else:
+        print(f"  a second pass over the same recording is identical: {same}")
 
     if state.terminal is Terminal.NEEDS_REVIEW and state.draft_digest:
         print()
@@ -124,8 +156,8 @@ def main() -> int:
         print("APPROVAL GATE")
         print("=" * 68)
         print("  The run stopped here. Nothing was sent or published.")
-        print("  To continue, an approval must name this exact digest:")
-        print(f"      run_id       = {run_id}")
+        print("  To continue, a decision must name this exact digest:")
+        print(f"      run_id       = {RUN_ID}")
         print(f"      draft_digest = {state.draft_digest}")
         print()
         print("  Try it: .venv/bin/python scripts/approve_demo.py")
@@ -133,4 +165,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,10 @@
+{
+  "assessment_sha": "cf6e38754fea8dd44610bb0022edc9ee15f1eda9fc4324d571601ea34987e800",
+  "confidence": 1.0,
+  "intervention": "review_follow_up",
+  "review_gap": 0.97,
+  "usage": {
+    "input_tokens": 655,
+    "output_tokens": 66
+  }
+}

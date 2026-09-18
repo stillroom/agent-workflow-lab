@@ -19,10 +19,18 @@ cd ~/Projects/agent-workflow-lab
 python3 -m venv .venv
 .venv/bin/python -m pip install pydantic pydantic-graph typesafe-sdk pytest
 
-.venv/bin/python -m pytest lessons -v          # 46 tests, no API key, no spend
-.venv/bin/python scripts/live_jev_demo.py      # live Jev -> workflow -> pause
+.venv/bin/python -m pytest lessons -v          # 65 tests, no API key, no spend
+.venv/bin/python scripts/live_jev_demo.py      # replay the frozen judgment -> pause
 .venv/bin/python scripts/approve_demo.py       # approve the exact artifact
-.venv/bin/python scripts/build_walkthrough.py  # regenerate the HTML page
+.venv/bin/python scripts/build_walkthrough.py  # regenerate the HTML, offline
+```
+
+The demo and the docs build replay a **committed recording**, so a fresh clone
+reproduces the whole run with no key and no network. Only `--live` calls Jev:
+
+```bash
+.venv/bin/python scripts/live_jev_demo.py --live         # real call, refreshes the recording
+.venv/bin/python scripts/build_walkthrough.py --live     # docs with a fresh live call in them
 ```
 
 The live demo is the only script that needs a key, and the repo never hardcodes
@@ -37,15 +45,16 @@ where yours lives — see [Where the Jev key comes from](#where-the-jev-key-come
 | `agent_lab/judgment.py` | One typed judgment, from Jev / a recording / a stub |
 | `agent_lab/credentials.py` | Where the Jev key comes from: environment, `.env`, or a `.env` pointer |
 | `agent_lab/runlog.py` | Append-only JSONL run evidence |
-| `agent_lab/approvals.py` | Human approval bound to an exact artifact digest |
+| `agent_lab/approvals.py` | Human decisions (`approved`/`rejected`) bound to an exact artifact digest |
 | `agent_lab/workflow.py` | The workflow as a **plain Python state machine** |
 | `agent_lab/graph_workflow.py` | The same workflow driven by **pydantic-graph** |
 | `lessons/lesson_01_encoding/` | Tests that demonstrate each encoding failure mode |
 | `lessons/lesson_02_workflow/` | Tests for the control plane, gates and terminals |
 | `lessons/lesson_03_jev/` | Tests for the model boundary and deterministic replay |
-| `scripts/live_jev_demo.py` | Real Jev call driving a real run |
+| `scripts/live_jev_demo.py` | A Jev judgment driving a real run; `--live` calls Jev, default replays |
 | `scripts/approve_demo.py` | Resuming a paused run at the approval gate |
-| `scripts/build_walkthrough.py` | Generates `walkthrough.html` from the real source |
+| `scripts/build_walkthrough.py` | Generates `walkthrough.html` from the real source; offline unless `--live` |
+| `recordings/` | A frozen live judgment, committed so replay works offline |
 | `.env.example` | Template for the gitignored `.env`; contains no secret |
 
 ## The path a run takes
@@ -113,8 +122,8 @@ TYPESAFE_ENV_FILE=~/.config/my-secrets/typesafe.env
 Relative pointers resolve against the directory of the `.env` that declared them,
 so the checkout stays portable if you move it. `$VAR` values are never expanded
 and never executed: a value is read literally. Nothing in the lab authenticates —
-the key is exported and the SDK reads it from there. Run a live test with no key
-and the failure names the three options above instead of raising a traceback.
+no key is present for the test suite, the default demo, or the docs build, because
+none of them needs one.
 
 ## What is deliberately not here
 

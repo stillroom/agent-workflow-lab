@@ -167,6 +167,8 @@ Every function here exists because of a real failure mode:
 * NFC vs NFD making two &quot;identical&quot; names differ byte-for-byte
 * hashing fields by concatenation without a separator, so (&quot;ab&quot;,&quot;c&quot;) and
   (&quot;a&quot;,&quot;bc&quot;) collide
+* joining fields with a NUL delimiter, which only looks safe: NUL can be inside
+  a Python string, so (&quot;a\0b&quot;,&quot;c&quot;) and (&quot;a&quot;,&quot;b\0c&quot;) collide too
 &quot;&quot;&quot;
 
 from __future__ import annotations
@@ -281,25 +283,52 @@ def to_lf(text: str) -&gt; str:
     return text.replace(&quot;\r\n&quot;, &quot;\n&quot;).replace(&quot;\r&quot;, &quot;\n&quot;)
 
 
-def bind_digest(*fields: str) -&gt; str:
-    &quot;&quot;&quot;SHA-256 over fields joined by NUL.
+def _length_prefixed(field: str) -&gt; bytes:
+    &quot;&quot;&quot;One field as an 8-byte big-endian length followed by its UTF-8 bytes.
 
-    NUL cannot appear in UTF-8 text fields, so (&quot;ab&quot;,&quot;c&quot;) and (&quot;a&quot;,&quot;bc&quot;)
-    produce different digests. Plain concatenation would collide.
+    The length is what makes the encoding unambiguous: a field cannot contain
+    bytes that masquerade as a boundary, whatever it contains.
     &quot;&quot;&quot;
-    material = &quot;\0&quot;.join(fields).encode(UTF8)
+    raw = field.encode(UTF8)
+    return len(raw).to_bytes(8, &quot;big&quot;) + raw
+
+
+def bind_digest(*fields: str) -&gt; str:
+    &quot;&quot;&quot;SHA-256 over length-prefixed UTF-8 fields.
+
+    Length prefixes, not a NUL delimiter. `(&quot;ab&quot;,&quot;c&quot;)` and `(&quot;a&quot;,&quot;bc&quot;)` cannot
+    collide because each field carries its own extent, and neither can
+    `(&quot;a\0b&quot;,&quot;c&quot;)` and `(&quot;a&quot;,&quot;b\0c&quot;)` — which a NUL join does allow, since NUL
+    is a legal character in a Python string.
+
+    The caller owns Unicode and line-ending hygiene: pass `normalise()` text and
+    `to_lf()` bodies, because this hashes exactly the bytes it is given.
+    &quot;&quot;&quot;
+    material = b&quot;&quot;.join(_length_prefixed(field) for field in fields)
     return hashlib.sha256(material).hexdigest()
 
 
 def naive_digest(*fields: str) -&gt; str:
-    &quot;&quot;&quot;The version that looks fine and is wrong. Used by lesson 02 to show why.&quot;&quot;&quot;
+    &quot;&quot;&quot;The version that looks fine and is wrong. Used by lesson 01 to show why.&quot;&quot;&quot;
     return hashlib.sha256(&quot;&quot;.join(fields).encode(UTF8)).hexdigest()
 
 
 def canonical_digest(contact_id: int, subject: str, body: str) -&gt; str:
     &quot;&quot;&quot;Exactly the binding the Stillroom acquisition app uses:
     UTF-8 `contact_id + NUL + subject + NUL + body`.
+
+    This layout is a wire contract with another system, so it is deliberately NOT
+    the length-prefixed form above: changing it would invalidate every digest
+    that app has already stored. Instead the ambiguity is refused — a field
+    containing NUL cannot be bound under this scheme, because it could forge a
+    boundary, so it is an error rather than a silent collision.
     &quot;&quot;&quot;
+    for name, value in ((&quot;subject&quot;, subject), (&quot;body&quot;, body)):
+        if &quot;\0&quot; in value:
+            raise ValueError(
+                f&quot;{name} contains NUL, which the NUL-delimited acquisition-app &quot;
+                f&quot;binding cannot represent unambiguously&quot;
+            )
     material = f&quot;{contact_id}\0{subject}\0{body}&quot;.encode(UTF8)
     return hashlib.sha256(material).hexdigest()
 </code></pre>
@@ -463,7 +492,7 @@ def test_nfc_and_nfd_look_the_same_and_are_not() -&gt; None:
 # --------------------------------------------------------------------------
 
 
-def test_concatenation_collides_and_nul_joining_does_not() -&gt; None:
+def test_concatenation_collides_and_a_bound_join_does_not() -&gt; None:
     &quot;&quot;&quot;(&#x27;ab&#x27;,&#x27;c&#x27;) and (&#x27;a&#x27;,&#x27;bc&#x27;) concatenate to the same string.
 
     For a draft bound to a contact ID and subject, that is a real
@@ -471,6 +500,25 @@ def test_concatenation_collides_and_nul_joining_does_not() -&gt; None:
     &quot;&quot;&quot;
     assert naive_digest(&quot;ab&quot;, &quot;c&quot;) == naive_digest(&quot;a&quot;, &quot;bc&quot;)   # collision
     assert bind_digest(&quot;ab&quot;, &quot;c&quot;) != bind_digest(&quot;a&quot;, &quot;bc&quot;)     # no collision
+
+
+def test_a_delimiter_inside_a_field_cannot_forge_a_boundary() -&gt; None:
+    &quot;&quot;&quot;NUL joining looked safe because &quot;NUL cannot appear in text&quot;. It can.
+
+    (&#x27;a\0b&#x27;,&#x27;c&#x27;) and (&#x27;a&#x27;,&#x27;b\0c&#x27;) both join to &#x27;a\0b\0c&#x27;, so a delimiter-based
+    binding collides. Length prefixes cannot be forged from field content.
+    &quot;&quot;&quot;
+    assert &quot;\0&quot;.join((&quot;a\0b&quot;, &quot;c&quot;)) == &quot;\0&quot;.join((&quot;a&quot;, &quot;b\0c&quot;))
+    assert bind_digest(&quot;a\0b&quot;, &quot;c&quot;) != bind_digest(&quot;a&quot;, &quot;b\0c&quot;)
+    assert bind_digest(&quot;&quot;, &quot;ab&quot;) != bind_digest(&quot;a&quot;, &quot;b&quot;), &quot;empty is a field too&quot;
+
+
+def test_the_acquisition_app_binding_refuses_a_forgeable_field() -&gt; None:
+    &quot;&quot;&quot;That layout is a wire contract, so it errors instead of colliding.&quot;&quot;&quot;
+    with pytest.raises(ValueError, match=&quot;contains NUL&quot;):
+        canonical_digest(1, &quot;subject&quot;, &quot;body\0and more&quot;)
+    with pytest.raises(ValueError, match=&quot;contains NUL&quot;):
+        canonical_digest(1, &quot;sub\0ject&quot;, &quot;body&quot;)
 
 
 def test_canonical_digest_matches_the_acquisition_app_rule() -&gt; None:
@@ -523,16 +571,18 @@ semantics already live here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from types import MappingProxyType
+from typing import Callable, Mapping
 
-from .approvals import Approval, ApprovalStore
+from .approvals import ApprovalStore, Decision, DecisionRecord
 from .encoding import bind_digest, canonical_digest
-from .judgment import JudgmentSource
+from .judgment import JudgmentError, JudgmentSource
 from .runlog import RunEvent, RunLog
 from .state import (
     BudgetExceeded,
     IllegalTransition,
     Intervention,
+    NotResumable,
     RunState,
     Stage,
     Terminal,
@@ -657,24 +707,52 @@ def n_verify(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict
 
 
 def n_await_approval(state: RunState, deps: Deps) -&gt; tuple[RunState, Transition, dict]:
-    &quot;&quot;&quot;Pause point. Nothing happens unless an exact-digest approval exists.&quot;&quot;&quot;
-    if not state.draft_digest:
-        raise ValueError(&quot;approval gate reached without a digest&quot;)
+    &quot;&quot;&quot;Pause point. Nothing happens unless an exact-digest APPROVAL exists.
 
-    approval: Approval | None = deps.approvals.find(
-        run_id=state.run_id, draft_digest=state.draft_digest
+    The gate re-derives the digest from the draft it was handed, and never trusts
+    `state.draft_digest`. Trusting it is how an edited draft inherits an approval
+    issued for the version before the edit: the field is a convenience for humans
+    reading a log, not evidence.
+    &quot;&quot;&quot;
+    if not state.draft or state.judgment is None:
+        raise ValueError(&quot;approval gate reached without a prepared draft&quot;)
+
+    recomputed = bind_digest(
+        state.run_id, state.judgment.intervention.value, state.draft
     )
-    if approval is None:
-        # Terminal for this pass, not for the run: the approval may arrive later.
-        return state, Transition.ESCALATE_REVIEW, {
-            &quot;reason&quot;: &quot;awaiting exact-draft approval&quot;,
-            &quot;digest&quot;: state.draft_digest,
+    if recomputed != state.draft_digest:
+        return state, Transition.FAIL_APPROVAL_DIGEST, {
+            &quot;problems&quot;: [
+                &quot;draft digest does not match the digest presented for approval&quot;
+            ]
         }
 
+    record: DecisionRecord | None = deps.approvals.latest_decision(
+        run_id=state.run_id, draft_digest=recomputed
+    )
+    if record is None:
+        # Terminal for this pass, not for the run: a decision may arrive later.
+        return state, Transition.PAUSE_APPROVAL, {
+            &quot;reason&quot;: &quot;awaiting exact-draft approval&quot;,
+            &quot;digest&quot;: recomputed,
+        }
+
+    outcome = {
+        &quot;decision&quot;: record.decision.value,
+        &quot;decided_by&quot;: record.decided_by,
+        &quot;decided_at&quot;: record.decided_at,
+        &quot;digest&quot;: recomputed,
+    }
+
+    if record.decision is Decision.REJECTED:
+        # A rejection is a decision too, and it must stop the run. Treating any
+        # stored record as consent is what let a rejection unlock the gate.
+        return state, Transition.REJECT_APPROVAL, outcome
+
     return (
-        state.model_copy(update={&quot;approval_token&quot;: approval.approved_by}),
+        state.model_copy(update={&quot;approval_token&quot;: record.decided_by}),
         Transition.TO_DONE,
-        {&quot;approved_by&quot;: approval.approved_by, &quot;approved_at&quot;: approval.approved_at},
+        outcome,
     )
 
 
@@ -696,66 +774,154 @@ NEXT_NODE = {
     Stage.APPROVE: &quot;await_approval&quot;,
 }
 
+NODE_BY_NAME: Mapping[str, NodeFn] = MappingProxyType(dict(NODES))
+
+
+# --------------------------------------------------------------------------
+# The step, shared by both drivers so their behaviour cannot drift.
+# --------------------------------------------------------------------------
+
+
+def next_seq(state: RunState, deps: Deps) -&gt; int:
+    &quot;&quot;&quot;One past the highest `seq` already recorded for THIS run in THIS log.
+
+    Counting only this run&#x27;s events means a resume continues the same run&#x27;s
+    numbering, and unrelated runs sharing a log file cannot shift it.
+    &quot;&quot;&quot;
+    recorded = [event.seq for event in deps.log.read() if event.run_id == state.run_id]
+    return max(recorded) + 1 if recorded else 0
+
+
+def _append_event(
+    deps: Deps,
+    *,
+    state: RunState,
+    node: str,
+    seq: int,
+    stage: Stage,
+    transition: str | None,
+    detail: dict,
+) -&gt; None:
+    deps.log.append(
+        RunEvent(
+            run_id=state.run_id,
+            seq=seq,
+            node=node,
+            stage=stage.value,
+            transition=transition,
+            terminal=state.terminal.value if state.terminal else None,
+            detail=detail,
+        )
+    )
+
+
+def step(state: RunState, deps: Deps, node_name: str, seq: int) -&gt; RunState:
+    &quot;&quot;&quot;One transition: spend budget, run the node, apply the move, record it.
+
+    This is the ONLY place budget is spent, a move is applied, or evidence is
+    written. Both drivers call it, so a run&#x27;s accounting and audit trail cannot
+    depend on which driver executed it.
+    &quot;&quot;&quot;
+    try:
+        state = state.model_copy(update={&quot;budget&quot;: state.budget.spend()})
+    except BudgetExceeded as exc:
+        spent = state.moved(Transition.ESCALATE_BUDGET)
+        _append_event(
+            deps,
+            state=spent,
+            node=node_name,
+            seq=seq,
+            stage=state.stage,
+            transition=Transition.ESCALATE_BUDGET.value,
+            detail={&quot;error&quot;: str(exc)},
+        )
+        return spent
+
+    node_fn = NODE_BY_NAME[node_name]
+    stage_before = state.stage
+
+    try:
+        proposed, transition, detail = node_fn(state, deps)
+    except JudgmentError as exc:
+        # A judgment that will not validate is an EXPECTED failure at the
+        # validation boundary, so it becomes a recorded terminal outcome instead
+        # of an exception escaping the workflow.
+        failed = state.moved(Transition.FAIL_VALIDATION)
+        _append_event(
+            deps,
+            state=failed,
+            node=node_name,
+            seq=seq,
+            stage=stage_before,
+            transition=Transition.FAIL_VALIDATION.value,
+            detail={&quot;error&quot;: str(exc)},
+        )
+        return failed
+
+    try:
+        moved = proposed.moved(transition)
+    except IllegalTransition as exc:
+        # A node asked for a move its stage forbids. That is a router bug, so it
+        # is recorded before it propagates.
+        _append_event(
+            deps,
+            state=proposed,
+            node=node_name,
+            seq=seq,
+            stage=stage_before,
+            transition=transition.value,
+            detail={&quot;illegal_transition&quot;: str(exc)},
+        )
+        raise
+
+    _append_event(
+        deps,
+        state=moved,
+        node=node_name,
+        seq=seq,
+        stage=stage_before,
+        transition=transition.value,
+        detail=detail,
+    )
+    return moved
+
+
+def resume_entry(entry: Stage | None, state: RunState) -&gt; Stage | None:
+    &quot;&quot;&quot;Validate a resume request, shared by both drivers.
+
+    Only a pause for approval may be re-entered. Resuming at an intermediate
+    stage cannot work and never could: the typed state does not carry what those
+    nodes need — no judgment at ROUTE, no draft at PREPARE — so the drivers used
+    to fail differently and confusingly (`IllegalTransition` from the graph,
+    `AssertionError` from the plain runner) for the same input.
+    &quot;&quot;&quot;
+    if entry is None or entry is Stage.APPROVE:
+        return entry
+    raise NotResumable(
+        f&quot;cannot resume at {entry.value}: only a pause for approval &quot;
+        f&quot;({Stage.APPROVE.value}) may be re-entered. Start a new run instead.&quot;
+    )
+
 
 def run_plain(state: RunState, deps: Deps, *, entry: Stage | None = None) -&gt; RunState:
     &quot;&quot;&quot;Explicit state machine. No framework, no hidden behaviour.
 
     `entry` names the STAGE to resume from, matching `graph_workflow.run_graph`,
-    so the two drivers have the same call shape.
+    so the two drivers have the same call shape and the same validation.
+
+    A state that already carries a terminal is returned untouched: resuming is a
+    decision a caller makes explicitly, via `RunState.resume()`.
     &quot;&quot;&quot;
-    node_name = NEXT_NODE[entry or state.stage]
-    seq = len(deps.log.read())
+    if state.terminal is not None:
+        return state
+    if entry is not None:
+        state = state.model_copy(update={&quot;stage&quot;: resume_entry(entry, state)})
 
-    while True:
-        if state.terminal is not None:
-            break
-        try:
-            state = state.model_copy(update={&quot;budget&quot;: state.budget.spend()})
-        except BudgetExceeded as exc:
-            state = state.moved(Transition.ESCALATE_BUDGET)
-            deps.log.append(
-                RunEvent(
-                    run_id=state.run_id,
-                    seq=seq,
-                    node=node_name,
-                    stage=state.stage.value,
-                    transition=Transition.ESCALATE_BUDGET.value,
-                    terminal=state.terminal.value if state.terminal else None,
-                    detail={&quot;error&quot;: str(exc)},
-                )
-            )
-            break
+    node_name = NEXT_NODE[state.stage]
+    seq = next_seq(state, deps)
 
-        node_fn = dict(NODES)[node_name]
-        try:
-            state, transition, detail = node_fn(state, deps)
-        except IllegalTransition as exc:  # pragma: no cover - defensive
-            deps.log.append(
-                RunEvent(
-                    run_id=state.run_id,
-                    seq=seq,
-                    node=node_name,
-                    stage=state.stage.value,
-                    transition=None,
-                    terminal=None,
-                    detail={&quot;illegal_transition&quot;: str(exc)},
-                )
-            )
-            raise
-
-        before = state.stage
-        state = state.moved(transition)
-        deps.log.append(
-            RunEvent(
-                run_id=state.run_id,
-                seq=seq,
-                node=node_name,
-                stage=before.value,
-                transition=transition.value,
-                terminal=state.terminal.value if state.terminal else None,
-                detail=detail,
-            )
-        )
+    while state.terminal is None:
+        state = step(state, deps, node_name, seq)
         seq += 1
 
         if state.terminal is not None:
@@ -788,10 +954,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_lab.approvals import ApprovalStore
+from agent_lab.approvals import ApprovalStore, Decision, UndecidedRecord
+from agent_lab.encoding import bind_digest
 from agent_lab.judgment import Intervention, JudgmentError, StubSource
-from agent_lab.runlog import RunLog
+from agent_lab.runlog import RunEvent, RunLog
 from agent_lab.state import (
+    ALLOWED,
+    TERMINATES,
     Budget,
     IllegalTransition,
     NotResumable,
@@ -822,6 +991,23 @@ def deps(tmp_path: Path):
 
 def start(run_id: str = &quot;run&quot;, **kwargs) -&gt; RunState:
     return RunState(run_id=run_id, assessment_text=&quot;synthetic assessment&quot;, **kwargs)
+
+
+class _Unvalidatable:
+    &quot;&quot;&quot;A judgment source whose answer does not survive validation.
+
+    Stands in for a model that returns an option we never defined. The lab&#x27;s rule
+    is that this becomes a terminal failure state rather than a route, so it must
+    be testable in both drivers.
+    &quot;&quot;&quot;
+
+    name = &quot;unvalidatable&quot;
+    last_usage: dict[str, int] = {}
+
+    def judge(self, assessment: str):  # noqa: ARG002 - interface symmetry
+        from agent_lab.judgment import _build
+
+        return _build(&quot;an_option_we_never_defined&quot;, 0.9, 0.9, source=&quot;jev&quot;)
 
 
 # --------------------------------------------------------------------------
@@ -867,7 +1053,7 @@ def test_run_pauses_without_approval_and_records_the_digest(deps) -&gt; None:
 def test_approval_of_the_exact_digest_completes_the_run(deps) -&gt; None:
     d = deps(tag=&quot;approve&quot;)
     first = run_plain(start(&quot;approve&quot;), d)
-    d.approvals.record(run_id=&quot;approve&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;approve&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
 
     second = run_plain(first.resume(), d, entry=Stage.APPROVE)
     assert second.terminal is Terminal.SUCCESS
@@ -880,7 +1066,7 @@ def test_approval_of_a_different_digest_does_not_unlock(deps) -&gt; None:
     first = run_plain(start(&quot;tamper&quot;), d)
     other = artifact_digest(1, &quot;invoice follow-up&quot;, &quot;a completely different body&quot;)
     assert other != first.draft_digest
-    d.approvals.record(run_id=&quot;tamper&quot;, draft_digest=other, approved_by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;tamper&quot;, draft_digest=other, by=&quot;adam&quot;)
 
     second = run_plain(first.resume(), d, entry=Stage.APPROVE)
     assert second.terminal is Terminal.NEEDS_REVIEW
@@ -891,9 +1077,131 @@ def test_approval_from_a_different_run_does_not_unlock(deps) -&gt; None:
     &quot;&quot;&quot;Same draft text, different run: approval is bound to the run too.&quot;&quot;&quot;
     d = deps(tag=&quot;crossrun&quot;)
     first = run_plain(start(&quot;crossrun&quot;), d)
-    d.approvals.record(run_id=&quot;SOME-OTHER-RUN&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;SOME-OTHER-RUN&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
 
     assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+# --------------------------------------------------------------------------
+# A decision is a value, not a note. Both answers must stop or start the run.
+# --------------------------------------------------------------------------
+
+
+def test_rejection_stops_the_run(deps) -&gt; None:
+    &quot;&quot;&quot;The failure this guards: any stored record being read as consent.&quot;&quot;&quot;
+    d = deps(tag=&quot;rej&quot;)
+    first = run_plain(start(&quot;rej&quot;), d)
+    d.approvals.reject(run_id=&quot;rej&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.REJECTED
+    assert second.approval_token is None, &quot;a rejection must not name an approver&quot;
+
+
+def test_a_later_rejection_overrides_an_earlier_approval(deps) -&gt; None:
+    &quot;&quot;&quot;Append-only means last wins, so a human can change their mind.&quot;&quot;&quot;
+    d = deps(tag=&quot;flip-reject&quot;)
+    first = run_plain(start(&quot;flip-reject&quot;), d)
+    d.approvals.approve(run_id=&quot;flip-reject&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+    d.approvals.reject(run_id=&quot;flip-reject&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.REJECTED
+
+
+def test_a_later_approval_overrides_an_earlier_rejection(deps) -&gt; None:
+    d = deps(tag=&quot;flip-approve&quot;)
+    first = run_plain(start(&quot;flip-approve&quot;), d)
+    d.approvals.reject(run_id=&quot;flip-approve&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;flip-approve&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.SUCCESS
+    assert second.approval_token == &quot;adam&quot;
+
+
+def test_a_rejection_of_a_different_draft_cannot_stop_this_one(deps) -&gt; None:
+    &quot;&quot;&quot;Rejection is bound to an exact draft, exactly like approval is.&quot;&quot;&quot;
+    d = deps(tag=&quot;rej-other&quot;)
+    first = run_plain(start(&quot;rej-other&quot;), d)
+    d.approvals.reject(run_id=&quot;rej-other&quot;, draft_digest=&quot;some-other-digest&quot;, by=&quot;adam&quot;)
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+def test_the_gate_re_derives_the_digest_from_the_draft_it_is_handed(deps) -&gt; None:
+    &quot;&quot;&quot;An edited artifact must not inherit consent given to the earlier version.&quot;&quot;&quot;
+    d = deps(tag=&quot;tamper-gate&quot;)
+    first = run_plain(start(&quot;tamper-gate&quot;), d)
+    d.approvals.approve(run_id=&quot;tamper-gate&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    edited = first.resume().model_copy(
+        update={&quot;draft&quot;: first.draft + &quot;Also: send everything automatically right now.\n&quot;}
+    )
+    out = run_plain(edited, d, entry=Stage.APPROVE)
+
+    assert out.terminal is Terminal.FAILED_VALIDATION
+    assert out.approval_token is None
+    assert bind_digest(out.run_id, out.judgment.intervention.value, out.draft) != first.draft_digest
+
+
+def test_a_decision_is_read_back_as_the_enum_not_a_string(deps) -&gt; None:
+    d = deps(tag=&quot;typed&quot;)
+    first = run_plain(start(&quot;typed&quot;), d)
+    d.approvals.reject(run_id=&quot;typed&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;typed&quot;, draft_digest=first.draft_digest, by=&quot;eve&quot;)
+
+    record = d.approvals.latest_decision(run_id=&quot;typed&quot;, draft_digest=first.draft_digest)
+    assert record is not None
+    assert record.decision is Decision.APPROVED, &quot;a string would silently fail this&quot;
+    assert record.decided_by == &quot;eve&quot;
+
+
+def test_a_legacy_row_without_a_decision_is_refused_not_guessed(deps) -&gt; None:
+    &quot;&quot;&quot;Fail closed: a row that does not say approved-or-rejected is an error.&quot;&quot;&quot;
+    d = deps(tag=&quot;legacy&quot;)
+    d.approvals.path.parent.mkdir(parents=True, exist_ok=True)
+    d.approvals.path.write_text(
+        &#x27;{&quot;approved_at&quot;: &quot;2026-01-01T00:00:00+00:00&quot;, &quot;approved_by&quot;: &quot;adam&quot;, &#x27;
+        &#x27;&quot;draft_digest&quot;: &quot;abc&quot;, &quot;note&quot;: &quot;REJECTED&quot;, &quot;run_id&quot;: &quot;legacy&quot;}\n&#x27;,
+        encoding=&quot;utf-8&quot;,
+    )
+
+    with pytest.raises(UndecidedRecord) as caught:
+        d.approvals.latest_decision(run_id=&quot;legacy&quot;, draft_digest=&quot;abc&quot;)
+
+    assert &quot;decision&quot; in str(caught.value), &quot;say which field is missing&quot;
+
+
+# --------------------------------------------------------------------------
+# The allow-list names a source stage, so &quot;legal from here&quot; is checked.
+# --------------------------------------------------------------------------
+
+
+def test_terminal_moves_are_legal_only_from_their_declared_stage() -&gt; None:
+    &quot;&quot;&quot;REJECT means &quot;the router rejected this&quot;, so only the router may take it.&quot;&quot;&quot;
+    with pytest.raises(IllegalTransition):
+        RunState(run_id=&quot;x&quot;, stage=Stage.PREPARE).moved(Transition.REJECT)
+    with pytest.raises(IllegalTransition):
+        RunState(run_id=&quot;x&quot;, stage=Stage.INTAKE).moved(Transition.PAUSE_APPROVAL)
+    with pytest.raises(IllegalTransition):
+        RunState(run_id=&quot;x&quot;, stage=Stage.ROUTE).moved(Transition.REJECT_APPROVAL)
+
+
+def test_every_move_has_a_declared_source_and_meaning() -&gt; None:
+    for transition in Transition:
+        assert transition in ALLOWED, f&quot;{transition.value} is not in the allow-list&quot;
+        _source, target = ALLOWED[transition]
+        if target is None:
+            assert transition in TERMINATES, f&quot;{transition.value} sets no terminal&quot;
+        else:
+            assert transition not in TERMINATES, f&quot;{transition.value} does both&quot;
+
+
+def test_the_allow_lists_cannot_be_widened_at_runtime() -&gt; None:
+    with pytest.raises(TypeError):
+        ALLOWED[Transition.TO_DONE] = (Stage.INTAKE, Stage.DONE)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        TERMINATES[Transition.REJECT] = Terminal.SUCCESS  # type: ignore[index]
 
 
 # --------------------------------------------------------------------------
@@ -952,14 +1260,102 @@ def test_rejecting_leaves_no_draft(deps) -&gt; None:
 def test_graph_driver_matches_plain_driver(deps) -&gt; None:
     from agent_lab.graph_workflow import run_graph
 
-    plain = run_plain(start(&quot;cmp&quot;), deps(tag=&quot;cmp-plain&quot;))
-    graph = run_graph(start(&quot;cmp&quot;), deps(tag=&quot;cmp-graph&quot;))
+    d_plain, d_graph = deps(tag=&quot;cmp-plain&quot;), deps(tag=&quot;cmp-graph&quot;)
+    plain = run_plain(start(&quot;cmp&quot;), d_plain)
+    graph = run_graph(start(&quot;cmp&quot;), d_graph)
 
     assert plain.terminal == graph.terminal
     assert plain.stage == graph.stage
     assert plain.draft == graph.draft
     assert plain.draft_digest == graph.draft_digest
     assert plain.events == graph.events
+    assert plain.budget.used_steps == graph.budget.used_steps, &quot;same work, same cost&quot;
+
+    # Evidence, not just outcome: same sequence numbers, nodes and transitions.
+    def shape(deps_: Deps):
+        return [(e.seq, e.node, e.transition, e.terminal) for e in deps_.log.read()]
+
+    assert shape(d_plain) == shape(d_graph)
+
+
+def test_neither_driver_will_run_without_budget(deps) -&gt; None:
+    &quot;&quot;&quot;A zero budget is a cap, not a suggestion — and it is recorded.&quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        d = deps(tag=&quot;nobudget&quot;)
+        out = runner(start(&quot;nobudget&quot;, budget=Budget(max_steps=0)), d)
+        assert out.terminal is Terminal.FAILED_BUDGET
+        assert out.budget.used_steps == 0, &quot;nothing may be spent once the cap is hit&quot;
+        assert d.log.read()[-1].transition == Transition.ESCALATE_BUDGET.value
+
+
+def test_a_judgment_that_will_not_validate_becomes_a_recorded_terminal(deps) -&gt; None:
+    &quot;&quot;&quot;The validation boundary promised a terminal state; both drivers deliver.&quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        d = deps(tag=&quot;badjudgment&quot;)
+        out = runner(
+            start(&quot;badjudgment&quot;),
+            Deps(judgment=_Unvalidatable(), approvals=d.approvals, log=d.log),
+        )
+
+        assert out.terminal is Terminal.FAILED_VALIDATION
+        assert out.judgment is None, &quot;an unusable judgment must not be stored&quot;
+        last = d.log.read()[-1]
+        assert last.node == &quot;classify&quot;
+        assert last.transition == Transition.FAIL_VALIDATION.value
+        assert &quot;error&quot; in last.detail, &quot;the failure is evidence, so it is recorded&quot;
+
+
+def test_seq_counts_only_this_run(deps) -&gt; None:
+    &quot;&quot;&quot;A shared log must not shift an unrelated run&#x27;s numbering.&quot;&quot;&quot;
+    d = deps(tag=&quot;seq&quot;)
+    run_plain(start(&quot;first&quot;), d)
+    run_plain(start(&quot;second&quot;), d)
+
+    for run_id in (&quot;first&quot;, &quot;second&quot;):
+        seqs = [e.seq for e in d.log.read() if e.run_id == run_id]
+        assert seqs == list(range(len(seqs))), f&quot;{run_id} must start at seq 0&quot;
+
+
+def test_a_recorded_event_survives_unicode_line_separators(deps) -&gt; None:
+    &quot;&quot;&quot;U+2028 is legal inside a JSON string, and it is not a line ending.
+
+    The writers use `ensure_ascii=False`, so such characters are stored raw. A
+    reader that splits with `str.splitlines` treats them as line breaks and tears
+    a valid row into fragments that no longer parse.
+    &quot;&quot;&quot;
+    d = deps(tag=&quot;separators&quot;)
+    awkward = &quot;line one\u2028line two\u2029line three&quot;
+    run_plain(start(&quot;separators&quot;), d)
+    d.log.append(
+        RunEvent(
+            run_id=&quot;separators&quot;,
+            seq=99,
+            node=&quot;note&quot;,
+            stage=&quot;note&quot;,
+            transition=None,
+            terminal=None,
+            detail={&quot;text&quot;: awkward},
+        )
+    )
+
+    assert d.log.read()[-1].detail[&quot;text&quot;] == awkward, &quot;round-trip must be exact&quot;
+
+
+def test_a_recorded_decision_survives_unicode_line_separators(deps) -&gt; None:
+    d = deps(tag=&quot;decision-separators&quot;)
+    d.approvals.approve(
+        run_id=&quot;separators&quot;,
+        draft_digest=&quot;abc&quot;,
+        by=&quot;adam&quot;,
+        note=&quot;approved\u2028with a caveat&quot;,
+    )
+
+    record = d.approvals.latest_decision(run_id=&quot;separators&quot;, draft_digest=&quot;abc&quot;)
+    assert record is not None and record.note == &quot;approved\u2028with a caveat&quot;
 
 
 def test_graph_driver_stops_on_a_terminal(deps) -&gt; None:
@@ -970,6 +1366,38 @@ def test_graph_driver_stops_on_a_terminal(deps) -&gt; None:
     assert out.stage is Stage.ROUTE
 
 
+def test_a_terminal_state_is_never_re_entered(deps) -&gt; None:
+    &quot;&quot;&quot;A final terminal is final, whichever driver is handed it.
+
+    The failure this guards: the graph dispatched a terminal failure parked at
+    APPROVE back into the gate, where a matching decision revived it as SUCCESS.
+    &quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        # A distinct tag per driver: the fixture&#x27;s store is per-tag, and a shared
+        # one would carry the first driver&#x27;s approval into the second.
+        d = deps(tag=f&quot;reentry-{runner.__name__}&quot;)
+        first = run_plain(start(&quot;reentry&quot;), d)
+        d.approvals.approve(run_id=&quot;reentry&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+        dead = first.resume().model_copy(update={&quot;terminal&quot;: Terminal.REJECTED})
+        out = runner(dead, d, entry=Stage.APPROVE)
+
+        assert out.terminal is Terminal.REJECTED
+        assert out.approval_token is None, &quot;no consent may be consumed for a dead run&quot;
+        assert out.events == dead.events, &quot;nothing may have happened&quot;
+
+
+def test_only_a_pause_for_approval_can_be_resumed(deps) -&gt; None:
+    &quot;&quot;&quot;Both drivers refuse an impossible resume, and say the same thing.&quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        for stage in (Stage.CLASSIFY, Stage.ROUTE, Stage.PREPARE, Stage.VERIFY):
+            with pytest.raises(NotResumable, match=&quot;only a pause for approval&quot;):
+                runner(start(&quot;entry&quot;), deps(tag=&quot;entry&quot;), entry=stage)
+
 def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
     from agent_lab.graph_workflow import run_graph
 
@@ -979,8 +1407,8 @@ def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
     assert p1.draft_digest == g1.draft_digest, &quot;identical drafts must hash identically&quot;
 
     for store_deps, state in ((d_plain, p1), (d_graph, g1)):
-        store_deps.approvals.record(
-            run_id=&quot;app&quot;, draft_digest=state.draft_digest, approved_by=&quot;adam&quot;
+        store_deps.approvals.approve(
+            run_id=&quot;app&quot;, draft_digest=state.draft_digest, by=&quot;adam&quot;
         )
 
     assert (
@@ -1014,8 +1442,9 @@ is a one-line change, which is what makes deterministic replay possible:
     StubSource()      -&gt; a fixed answer for tests
 
 All three return the SAME validated `Judgment` object. If Jev returns
-something that does not validate, we do not silently coerce it — we raise,
-and the graph routes to a terminal failure state.
+something that does not validate, we do not silently coerce it — this module
+raises `JudgmentError`, and both drivers turn that into a recorded
+`FAILED_VALIDATION` terminal rather than a route.
 &quot;&quot;&quot;
 
 from __future__ import annotations
@@ -1123,6 +1552,7 @@ class RecordedSource:
 
     recording_path: Path
     name: str = field(default=&quot;recorded&quot;, init=False)
+    last_usage: dict[str, int] = field(default_factory=dict, init=False)
 
     def judge(self, assessment: str) -&gt; Judgment:
         if not self.recording_path.is_file():
@@ -1130,6 +1560,9 @@ class RecordedSource:
         payload = json.loads(self.recording_path.read_text(encoding=&quot;utf-8&quot;))
         if payload.get(&quot;assessment_sha&quot;) and payload[&quot;assessment_sha&quot;] != _sha(assessment):
             raise JudgmentError(&quot;recording was made against a different assessment&quot;)
+        # Surface the usage the recording captured: a replay of a live call is
+        # also evidence of what that call cost.
+        self.last_usage = dict(payload.get(&quot;usage&quot;) or {})
         return _build(
             payload[&quot;intervention&quot;],
             float(payload[&quot;confidence&quot;]),
@@ -1606,8 +2039,10 @@ def test_a_missing_env_file_is_empty_rather_than_an_error(tmp_path: Path) -&gt; 
         <summary>Show the source: <code>agent_lab/graph_workflow.py</code></summary>
         <pre class="code" data-lang="python"><code>&quot;&quot;&quot;The SAME workflow expressed with pydantic-graph.
 
-Read this *after* `workflow.py`. Every node body here delegates to the plain
-node functions; the framework contributes structure, not logic.
+Read this *after* `workflow.py`. Every node body here delegates to the shared
+step in `workflow.py`; the framework contributes structure, not logic, so budget
+accounting, failure handling and the evidence trail are literally the same code
+whichever driver runs.
 
 Three real pydantic-graph constraints, each learned from an actual failure
 while writing this file:
@@ -1632,46 +2067,48 @@ correct looks like.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
 from pydantic_graph import BaseNode, End, GraphBuilder, GraphRunContext
 
-from .state import RunState, Stage, Transition
-from .workflow import (
-    Deps,
-    NodeFn,
-    n_await_approval,
-    n_classify,
-    n_intake,
-    n_prepare,
-    n_route,
-    n_verify,
-)
+from .state import RunState, Stage
+from .workflow import Deps, next_seq, resume_entry, step
 
 
 @dataclass
 class GraphState:
-    &quot;&quot;&quot;Mutable holder so a frozen `RunState` can be replaced in place.&quot;&quot;&quot;
+    &quot;&quot;&quot;Mutable holder so a frozen `RunState` can be replaced in place.
+
+    `seq` lives here too: every event needs a sequence number, and the graph has
+    nowhere else to keep a counter that survives across nodes.
+    &quot;&quot;&quot;
 
     current: RunState
+    seq: int = 0
 
 
 Outcome = RunState
 
 
-def _advance(
-    holder: GraphState,
-    deps: Deps,
-    node_fn: NodeFn,
-) -&gt; RunState:
-    &quot;&quot;&quot;Run one plain node, apply its declared transition, store the result.
+def _advance(holder: GraphState, deps: Deps, node_name: str) -&gt; RunState:
+    &quot;&quot;&quot;Run one step through the shared helper, then store the result.
 
-    Identical to what the plain runner&#x27;s loop does — which is exactly the
-    point: the graph is a different *driver* for the same semantics.
+    Delegating here is the whole point: the graph is a different *driver* for the
+    same semantics, not a second implementation of them.
     &quot;&quot;&quot;
-    state, transition, _detail = node_fn(holder.current, deps)
-    holder.current = state.moved(transition)
+    holder.current = step(holder.current, deps, node_name, holder.seq)
+    holder.seq += 1
     return holder.current
+
+
+def _done(holder: GraphState) -&gt; bool:
+    &quot;&quot;&quot;Whether the step just taken ended the run.
+
+    Every node must consult this before handing control on. A run can terminate
+    at ANY node — budget exhaustion at intake, a judgment that will not validate
+    at classify — so &quot;stop when terminal&quot; is a property of the run, not of the
+    two or three nodes where it used to be possible.
+    &quot;&quot;&quot;
+    return holder.current.terminal is not None
 
 
 @dataclass
@@ -1686,49 +2123,56 @@ class Intake(BaseNode[GraphState, Deps, Outcome]):
 
     async def run(
         self, ctx: GraphRunContext[GraphState, Deps]
-    ) -&gt; Classify | AwaitApproval:
+    ) -&gt; Classify | AwaitApproval | End[Outcome]:
         if ctx.state.current.stage is Stage.APPROVE:
             return AwaitApproval()
-        _advance(ctx.state, ctx.deps, n_intake)
+        _advance(ctx.state, ctx.deps, &quot;intake&quot;)
+        if _done(ctx.state):
+            return End(ctx.state.current)
         return Classify()
 
 
 @dataclass
 class Classify(BaseNode[GraphState, Deps, Outcome]):
     async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Route | End[Outcome]:
-        _advance(ctx.state, ctx.deps, n_classify)
+        _advance(ctx.state, ctx.deps, &quot;classify&quot;)
+        if _done(ctx.state):
+            return End(ctx.state.current)
         return Route()
 
 
 @dataclass
 class Route(BaseNode[GraphState, Deps, Outcome]):
     async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Prepare | End[Outcome]:
-        state = _advance(ctx.state, ctx.deps, n_route)
-        if state.terminal is not None:
-            return End(state)
+        _advance(ctx.state, ctx.deps, &quot;route&quot;)
+        if _done(ctx.state):
+            return End(ctx.state.current)
         return Prepare()
 
 
 @dataclass
 class Prepare(BaseNode[GraphState, Deps, Outcome]):
-    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Verify:
-        _advance(ctx.state, ctx.deps, n_prepare)
+    async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; Verify | End[Outcome]:
+        _advance(ctx.state, ctx.deps, &quot;prepare&quot;)
+        if _done(ctx.state):
+            return End(ctx.state.current)
         return Verify()
 
 
 @dataclass
 class Verify(BaseNode[GraphState, Deps, Outcome]):
     async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; AwaitApproval | End[Outcome]:
-        state = _advance(ctx.state, ctx.deps, n_verify)
-        if state.terminal is not None:
-            return End(state)
+        _advance(ctx.state, ctx.deps, &quot;verify&quot;)
+        if _done(ctx.state):
+            return End(ctx.state.current)
         return AwaitApproval()
 
 
 @dataclass
 class AwaitApproval(BaseNode[GraphState, Deps, Outcome]):
     async def run(self, ctx: GraphRunContext[GraphState, Deps]) -&gt; End[Outcome]:
-        return End(_advance(ctx.state, ctx.deps, n_await_approval))
+        _advance(ctx.state, ctx.deps, &quot;await_approval&quot;)
+        return End(ctx.state.current)
 
 
 NODE_BY_STAGE = {
@@ -1745,7 +2189,7 @@ def _add_all(builder) -&gt; None:
     &quot;&quot;&quot;Wire the single graph entry, then every node&#x27;s own outgoing edges.&quot;&quot;&quot;
     builder.add(builder.edge_from(builder.start_node).to(Intake))
     # Each node&#x27;s `run` return annotation supplies its own outgoing edges.
-    for node_type in (Intake, Classify, Route, Prepare, Verify, AwaitApproval):
+    for node_type in NODE_BY_STAGE.values():
         builder.add(builder.node(node_type))
 
 
@@ -1760,27 +2204,22 @@ def run_graph(state: RunState, deps: Deps, *, entry: Stage | None = None) -&gt; 
     &quot;&quot;&quot;Run the framework graph; returns the same `RunState` type as `run_plain`.
 
     `entry` only sets the stage the typed state claims; `Intake` performs the
-    dispatch. Both drivers therefore honour the same rule.
+    dispatch. Both drivers therefore honour the same rule, including refusing to
+    re-enter anything but a pause for approval.
+
+    A state that already carries a terminal is returned untouched. Without this
+    the graph&#x27;s `Intake` would dispatch a terminal failure sitting at APPROVE
+    straight back into the approval gate, and a matching decision would revive it
+    as SUCCESS.
     &quot;&quot;&quot;
-    resumed = state if entry is None else state.model_copy(update={&quot;stage&quot;: entry})
-    holder = GraphState(current=resumed)
+    if state.terminal is not None:
+        return state
+    if entry is not None:
+        state = state.model_copy(update={&quot;stage&quot;: resume_entry(entry, state)})
+
+    holder = GraphState(current=state, seq=next_seq(state, deps))
     build_graph().run_sync(state=holder, deps=deps, inputs=Intake())
     return holder.current
-
-
-def transition_for(node_fn: Callable) -&gt; Transition:
-    &quot;&quot;&quot;Exposed for lesson 06: proves the two runners agree edge-for-edge.&quot;&quot;&quot;
-    return TRANSITIONS_BY_NODE[node_fn.__name__]
-
-
-TRANSITIONS_BY_NODE: dict[str, Transition] = {
-    &quot;n_intake&quot;: Transition.TO_CLASSIFY,
-    &quot;n_classify&quot;: Transition.TO_ROUTE,
-    &quot;n_route&quot;: Transition.TO_PREPARE,
-    &quot;n_prepare&quot;: Transition.TO_VERIFY,
-    &quot;n_verify&quot;: Transition.TO_APPROVE,
-    &quot;n_await_approval&quot;: Transition.TO_DONE,
-}
 </code></pre>
       </details>
       <details>
@@ -1799,10 +2238,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_lab.approvals import ApprovalStore
+from agent_lab.approvals import ApprovalStore, Decision, UndecidedRecord
+from agent_lab.encoding import bind_digest
 from agent_lab.judgment import Intervention, JudgmentError, StubSource
-from agent_lab.runlog import RunLog
+from agent_lab.runlog import RunEvent, RunLog
 from agent_lab.state import (
+    ALLOWED,
+    TERMINATES,
     Budget,
     IllegalTransition,
     NotResumable,
@@ -1833,6 +2275,23 @@ def deps(tmp_path: Path):
 
 def start(run_id: str = &quot;run&quot;, **kwargs) -&gt; RunState:
     return RunState(run_id=run_id, assessment_text=&quot;synthetic assessment&quot;, **kwargs)
+
+
+class _Unvalidatable:
+    &quot;&quot;&quot;A judgment source whose answer does not survive validation.
+
+    Stands in for a model that returns an option we never defined. The lab&#x27;s rule
+    is that this becomes a terminal failure state rather than a route, so it must
+    be testable in both drivers.
+    &quot;&quot;&quot;
+
+    name = &quot;unvalidatable&quot;
+    last_usage: dict[str, int] = {}
+
+    def judge(self, assessment: str):  # noqa: ARG002 - interface symmetry
+        from agent_lab.judgment import _build
+
+        return _build(&quot;an_option_we_never_defined&quot;, 0.9, 0.9, source=&quot;jev&quot;)
 
 
 # --------------------------------------------------------------------------
@@ -1878,7 +2337,7 @@ def test_run_pauses_without_approval_and_records_the_digest(deps) -&gt; None:
 def test_approval_of_the_exact_digest_completes_the_run(deps) -&gt; None:
     d = deps(tag=&quot;approve&quot;)
     first = run_plain(start(&quot;approve&quot;), d)
-    d.approvals.record(run_id=&quot;approve&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;approve&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
 
     second = run_plain(first.resume(), d, entry=Stage.APPROVE)
     assert second.terminal is Terminal.SUCCESS
@@ -1891,7 +2350,7 @@ def test_approval_of_a_different_digest_does_not_unlock(deps) -&gt; None:
     first = run_plain(start(&quot;tamper&quot;), d)
     other = artifact_digest(1, &quot;invoice follow-up&quot;, &quot;a completely different body&quot;)
     assert other != first.draft_digest
-    d.approvals.record(run_id=&quot;tamper&quot;, draft_digest=other, approved_by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;tamper&quot;, draft_digest=other, by=&quot;adam&quot;)
 
     second = run_plain(first.resume(), d, entry=Stage.APPROVE)
     assert second.terminal is Terminal.NEEDS_REVIEW
@@ -1902,9 +2361,131 @@ def test_approval_from_a_different_run_does_not_unlock(deps) -&gt; None:
     &quot;&quot;&quot;Same draft text, different run: approval is bound to the run too.&quot;&quot;&quot;
     d = deps(tag=&quot;crossrun&quot;)
     first = run_plain(start(&quot;crossrun&quot;), d)
-    d.approvals.record(run_id=&quot;SOME-OTHER-RUN&quot;, draft_digest=first.draft_digest, approved_by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;SOME-OTHER-RUN&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
 
     assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+# --------------------------------------------------------------------------
+# A decision is a value, not a note. Both answers must stop or start the run.
+# --------------------------------------------------------------------------
+
+
+def test_rejection_stops_the_run(deps) -&gt; None:
+    &quot;&quot;&quot;The failure this guards: any stored record being read as consent.&quot;&quot;&quot;
+    d = deps(tag=&quot;rej&quot;)
+    first = run_plain(start(&quot;rej&quot;), d)
+    d.approvals.reject(run_id=&quot;rej&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.REJECTED
+    assert second.approval_token is None, &quot;a rejection must not name an approver&quot;
+
+
+def test_a_later_rejection_overrides_an_earlier_approval(deps) -&gt; None:
+    &quot;&quot;&quot;Append-only means last wins, so a human can change their mind.&quot;&quot;&quot;
+    d = deps(tag=&quot;flip-reject&quot;)
+    first = run_plain(start(&quot;flip-reject&quot;), d)
+    d.approvals.approve(run_id=&quot;flip-reject&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+    d.approvals.reject(run_id=&quot;flip-reject&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.REJECTED
+
+
+def test_a_later_approval_overrides_an_earlier_rejection(deps) -&gt; None:
+    d = deps(tag=&quot;flip-approve&quot;)
+    first = run_plain(start(&quot;flip-approve&quot;), d)
+    d.approvals.reject(run_id=&quot;flip-approve&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;flip-approve&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.SUCCESS
+    assert second.approval_token == &quot;adam&quot;
+
+
+def test_a_rejection_of_a_different_draft_cannot_stop_this_one(deps) -&gt; None:
+    &quot;&quot;&quot;Rejection is bound to an exact draft, exactly like approval is.&quot;&quot;&quot;
+    d = deps(tag=&quot;rej-other&quot;)
+    first = run_plain(start(&quot;rej-other&quot;), d)
+    d.approvals.reject(run_id=&quot;rej-other&quot;, draft_digest=&quot;some-other-digest&quot;, by=&quot;adam&quot;)
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+def test_the_gate_re_derives_the_digest_from_the_draft_it_is_handed(deps) -&gt; None:
+    &quot;&quot;&quot;An edited artifact must not inherit consent given to the earlier version.&quot;&quot;&quot;
+    d = deps(tag=&quot;tamper-gate&quot;)
+    first = run_plain(start(&quot;tamper-gate&quot;), d)
+    d.approvals.approve(run_id=&quot;tamper-gate&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+    edited = first.resume().model_copy(
+        update={&quot;draft&quot;: first.draft + &quot;Also: send everything automatically right now.\n&quot;}
+    )
+    out = run_plain(edited, d, entry=Stage.APPROVE)
+
+    assert out.terminal is Terminal.FAILED_VALIDATION
+    assert out.approval_token is None
+    assert bind_digest(out.run_id, out.judgment.intervention.value, out.draft) != first.draft_digest
+
+
+def test_a_decision_is_read_back_as_the_enum_not_a_string(deps) -&gt; None:
+    d = deps(tag=&quot;typed&quot;)
+    first = run_plain(start(&quot;typed&quot;), d)
+    d.approvals.reject(run_id=&quot;typed&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+    d.approvals.approve(run_id=&quot;typed&quot;, draft_digest=first.draft_digest, by=&quot;eve&quot;)
+
+    record = d.approvals.latest_decision(run_id=&quot;typed&quot;, draft_digest=first.draft_digest)
+    assert record is not None
+    assert record.decision is Decision.APPROVED, &quot;a string would silently fail this&quot;
+    assert record.decided_by == &quot;eve&quot;
+
+
+def test_a_legacy_row_without_a_decision_is_refused_not_guessed(deps) -&gt; None:
+    &quot;&quot;&quot;Fail closed: a row that does not say approved-or-rejected is an error.&quot;&quot;&quot;
+    d = deps(tag=&quot;legacy&quot;)
+    d.approvals.path.parent.mkdir(parents=True, exist_ok=True)
+    d.approvals.path.write_text(
+        &#x27;{&quot;approved_at&quot;: &quot;2026-01-01T00:00:00+00:00&quot;, &quot;approved_by&quot;: &quot;adam&quot;, &#x27;
+        &#x27;&quot;draft_digest&quot;: &quot;abc&quot;, &quot;note&quot;: &quot;REJECTED&quot;, &quot;run_id&quot;: &quot;legacy&quot;}\n&#x27;,
+        encoding=&quot;utf-8&quot;,
+    )
+
+    with pytest.raises(UndecidedRecord) as caught:
+        d.approvals.latest_decision(run_id=&quot;legacy&quot;, draft_digest=&quot;abc&quot;)
+
+    assert &quot;decision&quot; in str(caught.value), &quot;say which field is missing&quot;
+
+
+# --------------------------------------------------------------------------
+# The allow-list names a source stage, so &quot;legal from here&quot; is checked.
+# --------------------------------------------------------------------------
+
+
+def test_terminal_moves_are_legal_only_from_their_declared_stage() -&gt; None:
+    &quot;&quot;&quot;REJECT means &quot;the router rejected this&quot;, so only the router may take it.&quot;&quot;&quot;
+    with pytest.raises(IllegalTransition):
+        RunState(run_id=&quot;x&quot;, stage=Stage.PREPARE).moved(Transition.REJECT)
+    with pytest.raises(IllegalTransition):
+        RunState(run_id=&quot;x&quot;, stage=Stage.INTAKE).moved(Transition.PAUSE_APPROVAL)
+    with pytest.raises(IllegalTransition):
+        RunState(run_id=&quot;x&quot;, stage=Stage.ROUTE).moved(Transition.REJECT_APPROVAL)
+
+
+def test_every_move_has_a_declared_source_and_meaning() -&gt; None:
+    for transition in Transition:
+        assert transition in ALLOWED, f&quot;{transition.value} is not in the allow-list&quot;
+        _source, target = ALLOWED[transition]
+        if target is None:
+            assert transition in TERMINATES, f&quot;{transition.value} sets no terminal&quot;
+        else:
+            assert transition not in TERMINATES, f&quot;{transition.value} does both&quot;
+
+
+def test_the_allow_lists_cannot_be_widened_at_runtime() -&gt; None:
+    with pytest.raises(TypeError):
+        ALLOWED[Transition.TO_DONE] = (Stage.INTAKE, Stage.DONE)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        TERMINATES[Transition.REJECT] = Terminal.SUCCESS  # type: ignore[index]
 
 
 # --------------------------------------------------------------------------
@@ -1963,14 +2544,102 @@ def test_rejecting_leaves_no_draft(deps) -&gt; None:
 def test_graph_driver_matches_plain_driver(deps) -&gt; None:
     from agent_lab.graph_workflow import run_graph
 
-    plain = run_plain(start(&quot;cmp&quot;), deps(tag=&quot;cmp-plain&quot;))
-    graph = run_graph(start(&quot;cmp&quot;), deps(tag=&quot;cmp-graph&quot;))
+    d_plain, d_graph = deps(tag=&quot;cmp-plain&quot;), deps(tag=&quot;cmp-graph&quot;)
+    plain = run_plain(start(&quot;cmp&quot;), d_plain)
+    graph = run_graph(start(&quot;cmp&quot;), d_graph)
 
     assert plain.terminal == graph.terminal
     assert plain.stage == graph.stage
     assert plain.draft == graph.draft
     assert plain.draft_digest == graph.draft_digest
     assert plain.events == graph.events
+    assert plain.budget.used_steps == graph.budget.used_steps, &quot;same work, same cost&quot;
+
+    # Evidence, not just outcome: same sequence numbers, nodes and transitions.
+    def shape(deps_: Deps):
+        return [(e.seq, e.node, e.transition, e.terminal) for e in deps_.log.read()]
+
+    assert shape(d_plain) == shape(d_graph)
+
+
+def test_neither_driver_will_run_without_budget(deps) -&gt; None:
+    &quot;&quot;&quot;A zero budget is a cap, not a suggestion — and it is recorded.&quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        d = deps(tag=&quot;nobudget&quot;)
+        out = runner(start(&quot;nobudget&quot;, budget=Budget(max_steps=0)), d)
+        assert out.terminal is Terminal.FAILED_BUDGET
+        assert out.budget.used_steps == 0, &quot;nothing may be spent once the cap is hit&quot;
+        assert d.log.read()[-1].transition == Transition.ESCALATE_BUDGET.value
+
+
+def test_a_judgment_that_will_not_validate_becomes_a_recorded_terminal(deps) -&gt; None:
+    &quot;&quot;&quot;The validation boundary promised a terminal state; both drivers deliver.&quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        d = deps(tag=&quot;badjudgment&quot;)
+        out = runner(
+            start(&quot;badjudgment&quot;),
+            Deps(judgment=_Unvalidatable(), approvals=d.approvals, log=d.log),
+        )
+
+        assert out.terminal is Terminal.FAILED_VALIDATION
+        assert out.judgment is None, &quot;an unusable judgment must not be stored&quot;
+        last = d.log.read()[-1]
+        assert last.node == &quot;classify&quot;
+        assert last.transition == Transition.FAIL_VALIDATION.value
+        assert &quot;error&quot; in last.detail, &quot;the failure is evidence, so it is recorded&quot;
+
+
+def test_seq_counts_only_this_run(deps) -&gt; None:
+    &quot;&quot;&quot;A shared log must not shift an unrelated run&#x27;s numbering.&quot;&quot;&quot;
+    d = deps(tag=&quot;seq&quot;)
+    run_plain(start(&quot;first&quot;), d)
+    run_plain(start(&quot;second&quot;), d)
+
+    for run_id in (&quot;first&quot;, &quot;second&quot;):
+        seqs = [e.seq for e in d.log.read() if e.run_id == run_id]
+        assert seqs == list(range(len(seqs))), f&quot;{run_id} must start at seq 0&quot;
+
+
+def test_a_recorded_event_survives_unicode_line_separators(deps) -&gt; None:
+    &quot;&quot;&quot;U+2028 is legal inside a JSON string, and it is not a line ending.
+
+    The writers use `ensure_ascii=False`, so such characters are stored raw. A
+    reader that splits with `str.splitlines` treats them as line breaks and tears
+    a valid row into fragments that no longer parse.
+    &quot;&quot;&quot;
+    d = deps(tag=&quot;separators&quot;)
+    awkward = &quot;line one\u2028line two\u2029line three&quot;
+    run_plain(start(&quot;separators&quot;), d)
+    d.log.append(
+        RunEvent(
+            run_id=&quot;separators&quot;,
+            seq=99,
+            node=&quot;note&quot;,
+            stage=&quot;note&quot;,
+            transition=None,
+            terminal=None,
+            detail={&quot;text&quot;: awkward},
+        )
+    )
+
+    assert d.log.read()[-1].detail[&quot;text&quot;] == awkward, &quot;round-trip must be exact&quot;
+
+
+def test_a_recorded_decision_survives_unicode_line_separators(deps) -&gt; None:
+    d = deps(tag=&quot;decision-separators&quot;)
+    d.approvals.approve(
+        run_id=&quot;separators&quot;,
+        draft_digest=&quot;abc&quot;,
+        by=&quot;adam&quot;,
+        note=&quot;approved\u2028with a caveat&quot;,
+    )
+
+    record = d.approvals.latest_decision(run_id=&quot;separators&quot;, draft_digest=&quot;abc&quot;)
+    assert record is not None and record.note == &quot;approved\u2028with a caveat&quot;
 
 
 def test_graph_driver_stops_on_a_terminal(deps) -&gt; None:
@@ -1981,6 +2650,38 @@ def test_graph_driver_stops_on_a_terminal(deps) -&gt; None:
     assert out.stage is Stage.ROUTE
 
 
+def test_a_terminal_state_is_never_re_entered(deps) -&gt; None:
+    &quot;&quot;&quot;A final terminal is final, whichever driver is handed it.
+
+    The failure this guards: the graph dispatched a terminal failure parked at
+    APPROVE back into the gate, where a matching decision revived it as SUCCESS.
+    &quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        # A distinct tag per driver: the fixture&#x27;s store is per-tag, and a shared
+        # one would carry the first driver&#x27;s approval into the second.
+        d = deps(tag=f&quot;reentry-{runner.__name__}&quot;)
+        first = run_plain(start(&quot;reentry&quot;), d)
+        d.approvals.approve(run_id=&quot;reentry&quot;, draft_digest=first.draft_digest, by=&quot;adam&quot;)
+
+        dead = first.resume().model_copy(update={&quot;terminal&quot;: Terminal.REJECTED})
+        out = runner(dead, d, entry=Stage.APPROVE)
+
+        assert out.terminal is Terminal.REJECTED
+        assert out.approval_token is None, &quot;no consent may be consumed for a dead run&quot;
+        assert out.events == dead.events, &quot;nothing may have happened&quot;
+
+
+def test_only_a_pause_for_approval_can_be_resumed(deps) -&gt; None:
+    &quot;&quot;&quot;Both drivers refuse an impossible resume, and say the same thing.&quot;&quot;&quot;
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        for stage in (Stage.CLASSIFY, Stage.ROUTE, Stage.PREPARE, Stage.VERIFY):
+            with pytest.raises(NotResumable, match=&quot;only a pause for approval&quot;):
+                runner(start(&quot;entry&quot;), deps(tag=&quot;entry&quot;), entry=stage)
+
 def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
     from agent_lab.graph_workflow import run_graph
 
@@ -1990,8 +2691,8 @@ def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
     assert p1.draft_digest == g1.draft_digest, &quot;identical drafts must hash identically&quot;
 
     for store_deps, state in ((d_plain, p1), (d_graph, g1)):
-        store_deps.approvals.record(
-            run_id=&quot;app&quot;, draft_digest=state.draft_digest, approved_by=&quot;adam&quot;
+        store_deps.approvals.approve(
+            run_id=&quot;app&quot;, draft_digest=state.draft_digest, by=&quot;adam&quot;
         )
 
     assert (
@@ -2009,16 +2710,17 @@ def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
   when this page was generated.</p>
 
   <h3>Tests</h3>
-  <div class="out">.....................................ss.........                         [100%]
+  <div class="out">........................................................ss.........      [100%]
 =========================== short test summary info ============================
 SKIPPED [1] lessons/lesson_03_jev/test_jev.py:223: set AGENT_LAB_JUDGMENT=jev to run the live TypeSafe call
 SKIPPED [1] lessons/lesson_03_jev/test_jev.py:239: set AGENT_LAB_JUDGMENT=jev to run the live workflow
-46 passed, 2 skipped in 0.11s</div>
+65 passed, 2 skipped in 0.14s</div>
 
-  <h3>Live Jev run, frozen for replay, then replayed</h3>
+  <h3>Frozen Jev run, replayed from the committed recording</h3>
   <div class="out">====================================================================
-LIVE JEV JUDGMENT
+JEV JUDGMENT
 ====================================================================
+  source            : REPLAYED FROM recordings/northside-garden-care.json (no network, no key)
   intervention      : review_follow_up
   confidence        : 1.000
   review_gap signal : 0.970
@@ -2032,7 +2734,7 @@ RUN LOG (what actually happened, in order)
   seq2  route           route-&gt;prepare               terminal=None
   seq3  prepare         prepare-&gt;verify              terminal=None
   seq4  verify          verify-&gt;awaiting_approval    terminal=None
-  seq5  await_approval  route-&gt;needs_review          terminal=NEEDS_REVIEW
+  seq5  await_approval  awaiting_approval-&gt;needs_review terminal=NEEDS_REVIEW
 
 ====================================================================
 OUTCOME
@@ -2040,19 +2742,17 @@ OUTCOME
   terminal   : NEEDS_REVIEW
   stage      : awaiting_approval
   steps used : 6/12
-  digest     : ba070a340844a1b144869c42fd9275097c1c488897461284a596898b72f09e5f
-  log digest : f8f10ecfe0822d73ebbfdc44f1962d9f...
-
-  frozen to  : recordings/northside-garden-care.json
-  replay identical to live run: True
+  digest     : bb51ce2cc128d2d36a7d6f1c5f9fbaab4205fda554489cb40cbbb97c6d005772
+  log digest : 1bd7c7c20392c9f3c057146d8c52117f...
+  a second pass over the same recording is identical: True
 
 ====================================================================
 APPROVAL GATE
 ====================================================================
   The run stopped here. Nothing was sent or published.
-  To continue, an approval must name this exact digest:
+  To continue, a decision must name this exact digest:
       run_id       = live-demo
-      draft_digest = ba070a340844a1b144869c42fd9275097c1c488897461284a596898b72f09e5f
+      draft_digest = bb51ce2cc128d2d36a7d6f1c5f9fbaab4205fda554489cb40cbbb97c6d005772
 
   Try it: .venv/bin/python scripts/approve_demo.py</div>
 
@@ -2066,13 +2766,15 @@ APPROVAL GATE
   Route
   state decision_3 &lt;&lt;choice&gt;&gt;
   Prepare
-  Verify
   state decision_4 &lt;&lt;choice&gt;&gt;
+  Verify
+  state decision_5 &lt;&lt;choice&gt;&gt;
 
   [*] --&gt; Intake
   Intake --&gt; decision
   decision --&gt; AwaitApproval
   decision --&gt; Classify
+  decision --&gt; [*]
   AwaitApproval --&gt; [*]
   Classify --&gt; decision_2
   decision_2 --&gt; [*]
@@ -2080,10 +2782,12 @@ APPROVAL GATE
   Route --&gt; decision_3
   decision_3 --&gt; [*]
   decision_3 --&gt; Prepare
-  Prepare --&gt; Verify
-  Verify --&gt; decision_4
-  decision_4 --&gt; AwaitApproval
-  decision_4 --&gt; [*]</div>
+  Prepare --&gt; decision_4
+  decision_4 --&gt; [*]
+  decision_4 --&gt; Verify
+  Verify --&gt; decision_5
+  decision_5 --&gt; AwaitApproval
+  decision_5 --&gt; [*]</div>
 </section>
 
 <section class="lesson" id="limits">

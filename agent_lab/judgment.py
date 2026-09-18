@@ -118,6 +118,7 @@ class RecordedSource:
 
     recording_path: Path
     name: str = field(default="recorded", init=False)
+    last_usage: dict[str, int] = field(default_factory=dict, init=False)
 
     def judge(self, assessment: str) -> Judgment:
         if not self.recording_path.is_file():
@@ -125,6 +126,9 @@ class RecordedSource:
         payload = json.loads(self.recording_path.read_text(encoding="utf-8"))
         if payload.get("assessment_sha") and payload["assessment_sha"] != _sha(assessment):
             raise JudgmentError("recording was made against a different assessment")
+        # Surface the usage the recording captured: a replay of a live call is
+        # also evidence of what that call cost.
+        self.last_usage = dict(payload.get("usage") or {})
         return _build(
             payload["intervention"],
             float(payload["confidence"]),
