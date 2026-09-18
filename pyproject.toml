@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "A small, readable agent workflow: typed state, explicit transitions, one Jev judgment, and a human approval gate."
 readme = "README.md"
 requires-python = ">=3.10"
+# SPDX expression (PEP 639), which is why the build backend floor is 77.
+license = "MIT"
+license-files = ["LICENSE"]
 # Bounds follow the Hermes dependency-pinning policy: >=floor,<next_major.
 dependencies = [
     "pydantic>=2.13,<3",

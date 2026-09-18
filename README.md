@@ -144,3 +144,12 @@ and code decides what to do with it.
 - The 0.60 confidence threshold is illustrative, not tuned on real data.
 - `cases/northside-garden-care.txt` is invented synthetic data. No real
   business, prospect or client information is in this lab.
+
+## Licence
+
+MIT. Use it, modify it, sell it — see [LICENSE](LICENSE). The only obligation is
+keeping the copyright notice and licence text with any copy or substantial
+portion. There is no warranty.
+
+That covers the lab. The Jev endpoint itself is TypeSafe's service and is subject
+to their terms, not this licence; nothing here grants you access to it.
