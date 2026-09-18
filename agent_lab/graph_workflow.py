@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pydantic_graph import BaseNode, End, GraphBuilder, GraphRunContext
 
 from .state import RunState, Stage
-from .workflow import Deps, next_seq, step
+from .workflow import Deps, next_seq, resume_entry, step
 
 
 @dataclass
@@ -165,9 +165,19 @@ def run_graph(state: RunState, deps: Deps, *, entry: Stage | None = None) -> Run
     """Run the framework graph; returns the same `RunState` type as `run_plain`.
 
     `entry` only sets the stage the typed state claims; `Intake` performs the
-    dispatch. Both drivers therefore honour the same rule.
+    dispatch. Both drivers therefore honour the same rule, including refusing to
+    re-enter anything but a pause for approval.
+
+    A state that already carries a terminal is returned untouched. Without this
+    the graph's `Intake` would dispatch a terminal failure sitting at APPROVE
+    straight back into the approval gate, and a matching decision would revive it
+    as SUCCESS.
     """
-    resumed = state if entry is None else state.model_copy(update={"stage": entry})
-    holder = GraphState(current=resumed, seq=next_seq(resumed, deps))
+    if state.terminal is not None:
+        return state
+    if entry is not None:
+        state = state.model_copy(update={"stage": resume_entry(entry, state)})
+
+    holder = GraphState(current=state, seq=next_seq(state, deps))
     build_graph().run_sync(state=holder, deps=deps, inputs=Intake())
     return holder.current
