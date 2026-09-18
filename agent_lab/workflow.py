@@ -13,11 +13,12 @@ semantics already live here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from types import MappingProxyType
+from typing import Callable, Mapping
 
 from .approvals import ApprovalStore, Decision, DecisionRecord
 from .encoding import bind_digest, canonical_digest
-from .judgment import JudgmentSource
+from .judgment import JudgmentError, JudgmentSource
 from .runlog import RunEvent, RunLog
 from .state import (
     BudgetExceeded,
@@ -214,6 +215,117 @@ NEXT_NODE = {
     Stage.APPROVE: "await_approval",
 }
 
+NODE_BY_NAME: Mapping[str, NodeFn] = MappingProxyType(dict(NODES))
+
+
+# --------------------------------------------------------------------------
+# The step, shared by both drivers so their behaviour cannot drift.
+# --------------------------------------------------------------------------
+
+
+def next_seq(state: RunState, deps: Deps) -> int:
+    """One past the highest `seq` already recorded for THIS run in THIS log.
+
+    Counting only this run's events means a resume continues the same run's
+    numbering, and unrelated runs sharing a log file cannot shift it.
+    """
+    recorded = [event.seq for event in deps.log.read() if event.run_id == state.run_id]
+    return max(recorded) + 1 if recorded else 0
+
+
+def _append_event(
+    deps: Deps,
+    *,
+    state: RunState,
+    node: str,
+    seq: int,
+    stage: Stage,
+    transition: str | None,
+    detail: dict,
+) -> None:
+    deps.log.append(
+        RunEvent(
+            run_id=state.run_id,
+            seq=seq,
+            node=node,
+            stage=stage.value,
+            transition=transition,
+            terminal=state.terminal.value if state.terminal else None,
+            detail=detail,
+        )
+    )
+
+
+def step(state: RunState, deps: Deps, node_name: str, seq: int) -> RunState:
+    """One transition: spend budget, run the node, apply the move, record it.
+
+    This is the ONLY place budget is spent, a move is applied, or evidence is
+    written. Both drivers call it, so a run's accounting and audit trail cannot
+    depend on which driver executed it.
+    """
+    try:
+        state = state.model_copy(update={"budget": state.budget.spend()})
+    except BudgetExceeded as exc:
+        spent = state.moved(Transition.ESCALATE_BUDGET)
+        _append_event(
+            deps,
+            state=spent,
+            node=node_name,
+            seq=seq,
+            stage=state.stage,
+            transition=Transition.ESCALATE_BUDGET.value,
+            detail={"error": str(exc)},
+        )
+        return spent
+
+    node_fn = NODE_BY_NAME[node_name]
+    stage_before = state.stage
+
+    try:
+        proposed, transition, detail = node_fn(state, deps)
+    except JudgmentError as exc:
+        # A judgment that will not validate is an EXPECTED failure at the
+        # validation boundary, so it becomes a recorded terminal outcome instead
+        # of an exception escaping the workflow.
+        failed = state.moved(Transition.FAIL_VALIDATION)
+        _append_event(
+            deps,
+            state=failed,
+            node=node_name,
+            seq=seq,
+            stage=stage_before,
+            transition=Transition.FAIL_VALIDATION.value,
+            detail={"error": str(exc)},
+        )
+        return failed
+
+    try:
+        moved = proposed.moved(transition)
+    except IllegalTransition as exc:
+        # A node asked for a move its stage forbids. That is a router bug, so it
+        # is recorded before it propagates.
+        _append_event(
+            deps,
+            state=proposed,
+            node=node_name,
+            seq=seq,
+            stage=stage_before,
+            transition=transition.value,
+            detail={"illegal_transition": str(exc)},
+        )
+        raise
+
+    _append_event(
+        deps,
+        state=moved,
+        node=node_name,
+        seq=seq,
+        stage=stage_before,
+        transition=transition.value,
+        detail=detail,
+    )
+    return moved
+
 
 def run_plain(state: RunState, deps: Deps, *, entry: Stage | None = None) -> RunState:
     """Explicit state machine. No framework, no hidden behaviour.
@@ -222,58 +334,10 @@ def run_plain(state: RunState, deps: Deps, *, entry: Stage | None = None) -> Run
     so the two drivers have the same call shape.
     """
     node_name = NEXT_NODE[entry or state.stage]
-    seq = len(deps.log.read())
+    seq = next_seq(state, deps)
 
-    while True:
-        if state.terminal is not None:
-            break
-        try:
-            state = state.model_copy(update={"budget": state.budget.spend()})
-        except BudgetExceeded as exc:
-            state = state.moved(Transition.ESCALATE_BUDGET)
-            deps.log.append(
-                RunEvent(
-                    run_id=state.run_id,
-                    seq=seq,
-                    node=node_name,
-                    stage=state.stage.value,
-                    transition=Transition.ESCALATE_BUDGET.value,
-                    terminal=state.terminal.value if state.terminal else None,
-                    detail={"error": str(exc)},
-                )
-            )
-            break
-
-        node_fn = dict(NODES)[node_name]
-        try:
-            state, transition, detail = node_fn(state, deps)
-        except IllegalTransition as exc:  # pragma: no cover - defensive
-            deps.log.append(
-                RunEvent(
-                    run_id=state.run_id,
-                    seq=seq,
-                    node=node_name,
-                    stage=state.stage.value,
-                    transition=None,
-                    terminal=None,
-                    detail={"illegal_transition": str(exc)},
-                )
-            )
-            raise
-
-        before = state.stage
-        state = state.moved(transition)
-        deps.log.append(
-            RunEvent(
-                run_id=state.run_id,
-                seq=seq,
-                node=node_name,
-                stage=before.value,
-                transition=transition.value,
-                terminal=state.terminal.value if state.terminal else None,
-                detail=detail,
-            )
-        )
+    while state.terminal is None:
+        state = step(state, deps, node_name, seq)
         seq += 1
 
         if state.terminal is not None:
