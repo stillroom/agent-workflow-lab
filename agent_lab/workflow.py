@@ -24,6 +24,7 @@ from .state import (
     BudgetExceeded,
     IllegalTransition,
     Intervention,
+    NotResumable,
     RunState,
     Stage,
     Terminal,
@@ -327,13 +328,38 @@ def step(state: RunState, deps: Deps, node_name: str, seq: int) -> RunState:
     return moved
 
 
+def resume_entry(entry: Stage | None, state: RunState) -> Stage | None:
+    """Validate a resume request, shared by both drivers.
+
+    Only a pause for approval may be re-entered. Resuming at an intermediate
+    stage cannot work and never could: the typed state does not carry what those
+    nodes need — no judgment at ROUTE, no draft at PREPARE — so the drivers used
+    to fail differently and confusingly (`IllegalTransition` from the graph,
+    `AssertionError` from the plain runner) for the same input.
+    """
+    if entry is None or entry is Stage.APPROVE:
+        return entry
+    raise NotResumable(
+        f"cannot resume at {entry.value}: only a pause for approval "
+        f"({Stage.APPROVE.value}) may be re-entered. Start a new run instead."
+    )
+
+
 def run_plain(state: RunState, deps: Deps, *, entry: Stage | None = None) -> RunState:
     """Explicit state machine. No framework, no hidden behaviour.
 
     `entry` names the STAGE to resume from, matching `graph_workflow.run_graph`,
-    so the two drivers have the same call shape.
+    so the two drivers have the same call shape and the same validation.
+
+    A state that already carries a terminal is returned untouched: resuming is a
+    decision a caller makes explicitly, via `RunState.resume()`.
     """
-    node_name = NEXT_NODE[entry or state.stage]
+    if state.terminal is not None:
+        return state
+    if entry is not None:
+        state = state.model_copy(update={"stage": resume_entry(entry, state)})
+
+    node_name = NEXT_NODE[state.stage]
     seq = next_seq(state, deps)
 
     while state.terminal is None:

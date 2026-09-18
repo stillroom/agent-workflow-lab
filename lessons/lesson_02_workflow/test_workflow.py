@@ -386,6 +386,38 @@ def test_graph_driver_stops_on_a_terminal(deps) -> None:
     assert out.stage is Stage.ROUTE
 
 
+def test_a_terminal_state_is_never_re_entered(deps) -> None:
+    """A final terminal is final, whichever driver is handed it.
+
+    The failure this guards: the graph dispatched a terminal failure parked at
+    APPROVE back into the gate, where a matching decision revived it as SUCCESS.
+    """
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        # A distinct tag per driver: the fixture's store is per-tag, and a shared
+        # one would carry the first driver's approval into the second.
+        d = deps(tag=f"reentry-{runner.__name__}")
+        first = run_plain(start("reentry"), d)
+        d.approvals.approve(run_id="reentry", draft_digest=first.draft_digest, by="adam")
+
+        dead = first.resume().model_copy(update={"terminal": Terminal.REJECTED})
+        out = runner(dead, d, entry=Stage.APPROVE)
+
+        assert out.terminal is Terminal.REJECTED
+        assert out.approval_token is None, "no consent may be consumed for a dead run"
+        assert out.events == dead.events, "nothing may have happened"
+
+
+def test_only_a_pause_for_approval_can_be_resumed(deps) -> None:
+    """Both drivers refuse an impossible resume, and say the same thing."""
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        for stage in (Stage.CLASSIFY, Stage.ROUTE, Stage.PREPARE, Stage.VERIFY):
+            with pytest.raises(NotResumable, match="only a pause for approval"):
+                runner(start("entry"), deps(tag="entry"), entry=stage)
+
 def test_graph_and_plain_agree_after_approval(deps) -> None:
     from agent_lab.graph_workflow import run_graph
 
