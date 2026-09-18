@@ -51,6 +51,23 @@ def start(run_id: str = "run", **kwargs) -> RunState:
     return RunState(run_id=run_id, assessment_text="synthetic assessment", **kwargs)
 
 
+class _Unvalidatable:
+    """A judgment source whose answer does not survive validation.
+
+    Stands in for a model that returns an option we never defined. The lab's rule
+    is that this becomes a terminal failure state rather than a route, so it must
+    be testable in both drivers.
+    """
+
+    name = "unvalidatable"
+    last_usage: dict[str, int] = {}
+
+    def judge(self, assessment: str):  # noqa: ARG002 - interface symmetry
+        from agent_lab.judgment import _build
+
+        return _build("an_option_we_never_defined", 0.9, 0.9, source="jev")
+
+
 # --------------------------------------------------------------------------
 # Terminals are reachable, and each means something specific.
 # --------------------------------------------------------------------------
@@ -301,14 +318,64 @@ def test_rejecting_leaves_no_draft(deps) -> None:
 def test_graph_driver_matches_plain_driver(deps) -> None:
     from agent_lab.graph_workflow import run_graph
 
-    plain = run_plain(start("cmp"), deps(tag="cmp-plain"))
-    graph = run_graph(start("cmp"), deps(tag="cmp-graph"))
+    d_plain, d_graph = deps(tag="cmp-plain"), deps(tag="cmp-graph")
+    plain = run_plain(start("cmp"), d_plain)
+    graph = run_graph(start("cmp"), d_graph)
 
     assert plain.terminal == graph.terminal
     assert plain.stage == graph.stage
     assert plain.draft == graph.draft
     assert plain.draft_digest == graph.draft_digest
     assert plain.events == graph.events
+    assert plain.budget.used_steps == graph.budget.used_steps, "same work, same cost"
+
+    # Evidence, not just outcome: same sequence numbers, nodes and transitions.
+    def shape(deps_: Deps):
+        return [(e.seq, e.node, e.transition, e.terminal) for e in deps_.log.read()]
+
+    assert shape(d_plain) == shape(d_graph)
+
+
+def test_neither_driver_will_run_without_budget(deps) -> None:
+    """A zero budget is a cap, not a suggestion — and it is recorded."""
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        d = deps(tag="nobudget")
+        out = runner(start("nobudget", budget=Budget(max_steps=0)), d)
+        assert out.terminal is Terminal.FAILED_BUDGET
+        assert out.budget.used_steps == 0, "nothing may be spent once the cap is hit"
+        assert d.log.read()[-1].transition == Transition.ESCALATE_BUDGET.value
+
+
+def test_a_judgment_that_will_not_validate_becomes_a_recorded_terminal(deps) -> None:
+    """The validation boundary promised a terminal state; both drivers deliver."""
+    from agent_lab.graph_workflow import run_graph
+
+    for runner in (run_plain, run_graph):
+        d = deps(tag="badjudgment")
+        out = runner(
+            start("badjudgment"),
+            Deps(judgment=_Unvalidatable(), approvals=d.approvals, log=d.log),
+        )
+
+        assert out.terminal is Terminal.FAILED_VALIDATION
+        assert out.judgment is None, "an unusable judgment must not be stored"
+        last = d.log.read()[-1]
+        assert last.node == "classify"
+        assert last.transition == Transition.FAIL_VALIDATION.value
+        assert "error" in last.detail, "the failure is evidence, so it is recorded"
+
+
+def test_seq_counts_only_this_run(deps) -> None:
+    """A shared log must not shift an unrelated run's numbering."""
+    d = deps(tag="seq")
+    run_plain(start("first"), d)
+    run_plain(start("second"), d)
+
+    for run_id in ("first", "second"):
+        seqs = [e.seq for e in d.log.read() if e.run_id == run_id]
+        assert seqs == list(range(len(seqs))), f"{run_id} must start at seq 0"
 
 
 def test_graph_driver_stops_on_a_terminal(deps) -> None:

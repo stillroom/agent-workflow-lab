@@ -8,8 +8,9 @@ is a one-line change, which is what makes deterministic replay possible:
     StubSource()      -> a fixed answer for tests
 
 All three return the SAME validated `Judgment` object. If Jev returns
-something that does not validate, we do not silently coerce it — we raise,
-and the graph routes to a terminal failure state.
+something that does not validate, we do not silently coerce it — this module
+raises `JudgmentError`, and both drivers turn that into a recorded
+`FAILED_VALIDATION` terminal rather than a route.
 """
 
 from __future__ import annotations
