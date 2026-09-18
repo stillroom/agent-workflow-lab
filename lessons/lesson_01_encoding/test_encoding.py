@@ -155,7 +155,7 @@ def test_nfc_and_nfd_look_the_same_and_are_not() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_concatenation_collides_and_nul_joining_does_not() -> None:
+def test_concatenation_collides_and_a_bound_join_does_not() -> None:
     """('ab','c') and ('a','bc') concatenate to the same string.
 
     For a draft bound to a contact ID and subject, that is a real
@@ -163,6 +163,25 @@ def test_concatenation_collides_and_nul_joining_does_not() -> None:
     """
     assert naive_digest("ab", "c") == naive_digest("a", "bc")   # collision
     assert bind_digest("ab", "c") != bind_digest("a", "bc")     # no collision
+
+
+def test_a_delimiter_inside_a_field_cannot_forge_a_boundary() -> None:
+    """NUL joining looked safe because "NUL cannot appear in text". It can.
+
+    ('a\0b','c') and ('a','b\0c') both join to 'a\0b\0c', so a delimiter-based
+    binding collides. Length prefixes cannot be forged from field content.
+    """
+    assert "\0".join(("a\0b", "c")) == "\0".join(("a", "b\0c"))
+    assert bind_digest("a\0b", "c") != bind_digest("a", "b\0c")
+    assert bind_digest("", "ab") != bind_digest("a", "b"), "empty is a field too"
+
+
+def test_the_acquisition_app_binding_refuses_a_forgeable_field() -> None:
+    """That layout is a wire contract, so it errors instead of colliding."""
+    with pytest.raises(ValueError, match="contains NUL"):
+        canonical_digest(1, "subject", "body\0and more")
+    with pytest.raises(ValueError, match="contains NUL"):
+        canonical_digest(1, "sub\0ject", "body")
 
 
 def test_canonical_digest_matches_the_acquisition_app_rule() -> None:
