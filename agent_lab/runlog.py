@@ -49,10 +49,16 @@ class RunLog:
             handle.write(event.to_json() + "\n")
 
     def read(self) -> list[RunEvent]:
+        """Every recorded event, in file order.
+
+        Split on LF only. The writer pins newline to "\n", while
+        `str.splitlines` also breaks on characters such as U+2028 — which are
+        legal inside a JSON string, so splitting on them tears valid rows apart.
+        """
         if not self.path.is_file():
             return []
         events: list[RunEvent] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        for line in self.path.read_text(encoding="utf-8").split("\n"):
             if line.strip():
                 events.append(RunEvent(**json.loads(line)))
         return events

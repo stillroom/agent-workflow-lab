@@ -15,7 +15,7 @@ import pytest
 from agent_lab.approvals import ApprovalStore, Decision, UndecidedRecord
 from agent_lab.encoding import bind_digest
 from agent_lab.judgment import Intervention, JudgmentError, StubSource
-from agent_lab.runlog import RunLog
+from agent_lab.runlog import RunEvent, RunLog
 from agent_lab.state import (
     ALLOWED,
     TERMINATES,
@@ -376,6 +376,44 @@ def test_seq_counts_only_this_run(deps) -> None:
     for run_id in ("first", "second"):
         seqs = [e.seq for e in d.log.read() if e.run_id == run_id]
         assert seqs == list(range(len(seqs))), f"{run_id} must start at seq 0"
+
+
+def test_a_recorded_event_survives_unicode_line_separators(deps) -> None:
+    """U+2028 is legal inside a JSON string, and it is not a line ending.
+
+    The writers use `ensure_ascii=False`, so such characters are stored raw. A
+    reader that splits with `str.splitlines` treats them as line breaks and tears
+    a valid row into fragments that no longer parse.
+    """
+    d = deps(tag="separators")
+    awkward = "line one\u2028line two\u2029line three"
+    run_plain(start("separators"), d)
+    d.log.append(
+        RunEvent(
+            run_id="separators",
+            seq=99,
+            node="note",
+            stage="note",
+            transition=None,
+            terminal=None,
+            detail={"text": awkward},
+        )
+    )
+
+    assert d.log.read()[-1].detail["text"] == awkward, "round-trip must be exact"
+
+
+def test_a_recorded_decision_survives_unicode_line_separators(deps) -> None:
+    d = deps(tag="decision-separators")
+    d.approvals.approve(
+        run_id="separators",
+        draft_digest="abc",
+        by="adam",
+        note="approved\u2028with a caveat",
+    )
+
+    record = d.approvals.latest_decision(run_id="separators", draft_digest="abc")
+    assert record is not None and record.note == "approved\u2028with a caveat"
 
 
 def test_graph_driver_stops_on_a_terminal(deps) -> None:

@@ -8,6 +8,8 @@ Every function here exists because of a real failure mode:
 * NFC vs NFD making two "identical" names differ byte-for-byte
 * hashing fields by concatenation without a separator, so ("ab","c") and
   ("a","bc") collide
+* joining fields with a NUL delimiter, which only looks safe: NUL can be inside
+  a Python string, so ("a\0b","c") and ("a","b\0c") collide too
 """
 
 from __future__ import annotations
@@ -122,24 +124,51 @@ def to_lf(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def bind_digest(*fields: str) -> str:
-    """SHA-256 over fields joined by NUL.
+def _length_prefixed(field: str) -> bytes:
+    """One field as an 8-byte big-endian length followed by its UTF-8 bytes.
 
-    NUL cannot appear in UTF-8 text fields, so ("ab","c") and ("a","bc")
-    produce different digests. Plain concatenation would collide.
+    The length is what makes the encoding unambiguous: a field cannot contain
+    bytes that masquerade as a boundary, whatever it contains.
     """
-    material = "\0".join(fields).encode(UTF8)
+    raw = field.encode(UTF8)
+    return len(raw).to_bytes(8, "big") + raw
+
+
+def bind_digest(*fields: str) -> str:
+    """SHA-256 over length-prefixed UTF-8 fields.
+
+    Length prefixes, not a NUL delimiter. `("ab","c")` and `("a","bc")` cannot
+    collide because each field carries its own extent, and neither can
+    `("a\0b","c")` and `("a","b\0c")` — which a NUL join does allow, since NUL
+    is a legal character in a Python string.
+
+    The caller owns Unicode and line-ending hygiene: pass `normalise()` text and
+    `to_lf()` bodies, because this hashes exactly the bytes it is given.
+    """
+    material = b"".join(_length_prefixed(field) for field in fields)
     return hashlib.sha256(material).hexdigest()
 
 
 def naive_digest(*fields: str) -> str:
-    """The version that looks fine and is wrong. Used by lesson 02 to show why."""
+    """The version that looks fine and is wrong. Used by lesson 01 to show why."""
     return hashlib.sha256("".join(fields).encode(UTF8)).hexdigest()
 
 
 def canonical_digest(contact_id: int, subject: str, body: str) -> str:
     """Exactly the binding the Stillroom acquisition app uses:
     UTF-8 `contact_id + NUL + subject + NUL + body`.
+
+    This layout is a wire contract with another system, so it is deliberately NOT
+    the length-prefixed form above: changing it would invalidate every digest
+    that app has already stored. Instead the ambiguity is refused — a field
+    containing NUL cannot be bound under this scheme, because it could forge a
+    boundary, so it is an error rather than a silent collision.
     """
+    for name, value in (("subject", subject), ("body", body)):
+        if "\0" in value:
+            raise ValueError(
+                f"{name} contains NUL, which the NUL-delimited acquisition-app "
+                f"binding cannot represent unambiguously"
+            )
     material = f"{contact_id}\0{subject}\0{body}".encode(UTF8)
     return hashlib.sha256(material).hexdigest()
