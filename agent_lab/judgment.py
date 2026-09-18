@@ -173,7 +173,7 @@ def source_from_env() -> JudgmentSource:
     """`AGENT_LAB_JUDGMENT=jev|recorded|stub` — explicit, never guessed."""
     selected = os.getenv("AGENT_LAB_JUDGMENT", "stub").strip()
     recording = Path(
-        os.getenv("AGENT_LAB_RECORDING", "recordings/review_follow_up.json")
+        os.getenv("AGENT_LAB_RECORDING", "recordings/northside-garden-care.json")
     )
     if selected == "jev":
         return JevSource()

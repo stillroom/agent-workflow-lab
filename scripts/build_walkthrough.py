@@ -295,11 +295,12 @@ python3 -m venv .venv
 
 <section class="lesson" id="shape">
   <div class="lesson-head"><span class="badge">Shape</span><h2>The shape of the thing</h2></div>
-  <p class="why">Eight small files. Read them in this order; each one is short
+  <p class="why">Nine small files. Read them in this order; each one is short
   enough to hold in your head at once.</p>
   {code_block('''agent_lab/state.py          typed state, legal transitions, terminals, budgets
 agent_lab/encoding.py       the encoding rules that stop silent corruption
 agent_lab/judgment.py       where a typed model judgment comes from
+agent_lab/credentials.py    where the Jev key comes from (pointer, no baked paths)
 agent_lab/runlog.py         append-only run evidence
 agent_lab/approvals.py      human approval bound to an exact digest
 agent_lab/workflow.py       the workflow as a PLAIN Python state machine
@@ -349,6 +350,9 @@ await_approval:  exact digest approved  ->  SUCCESS
     machines, and no tracing backend.</li>
     <li>The approval store is an append-only local file. It records who was
     named as approver; it does not authenticate them.</li>
+    <li><code>.env</code> and the pointer it can hold are conveniences, not a
+    secrets manager: a key written there is plaintext on disk. Point
+    <code>TYPESAFE_ENV_FILE</code> at a real secret store for anything more.</li>
     <li>The stub and recorded sources make behaviour deterministic; a live Jev
     call may differ run to run. Only <code>recorded</code> is replay-stable.</li>
     <li>Thresholds (0.60 confidence) are illustrative. Real thresholds need

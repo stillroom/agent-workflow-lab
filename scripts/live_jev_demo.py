@@ -9,7 +9,7 @@ writes `recordings/<case>.json` so the identical run can be replayed offline.
 
 from __future__ import annotations
 
-import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agent_lab.approvals import ApprovalStore  # noqa: E402
+from agent_lab.credentials import CredentialError, load_typesafe_credentials  # noqa: E402
 from agent_lab.judgment import JevSource, RecordedSource  # noqa: E402
 from agent_lab.runlog import RunLog, write_recording  # noqa: E402
 from agent_lab.state import RunState, Terminal  # noqa: E402
@@ -24,18 +25,14 @@ from agent_lab.workflow import Deps, run_plain  # noqa: E402
 
 
 def load_key() -> None:
-    """Read TYPESAFE_API_KEY from the active Hermes profile .env if unset."""
-    if os.getenv("TYPESAFE_API_KEY"):
-        return
-    env_file = Path.home() / ".hermes/profiles/hermes_engineer/.env"
-    for raw in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line.startswith("TYPESAFE_API_KEY="):
-            value = line.split("=", 1)[1].strip().strip("'\"")
-            if value:
-                os.environ["TYPESAFE_API_KEY"] = value
-                return
-    raise SystemExit("TYPESAFE_API_KEY is not set")
+    """Resolve TYPESAFE_API_KEY from the environment or a configured env file.
+
+    No path is hardcoded here: see `agent_lab/credentials.py` and `.env.example`.
+    """
+    try:
+        load_typesafe_credentials()
+    except CredentialError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def main() -> int:
@@ -46,6 +43,10 @@ def main() -> int:
     run_id = "live-demo"
 
     work = ROOT / "runs" / run_id
+    # Start from a clean directory: the run log is append-only, and `seq` counts
+    # the events already on disk, so accumulating across invocations would make
+    # this run's sequence numbers differ from the replay's for no real reason.
+    shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
 
     deps = Deps(
@@ -102,6 +103,7 @@ def main() -> int:
 
     # Replay the frozen judgment and confirm identical semantics, offline.
     replay_dir = ROOT / "runs" / f"{run_id}-replay"
+    shutil.rmtree(replay_dir, ignore_errors=True)
     replay_deps = Deps(
         judgment=RecordedSource(recording_path=recording),
         approvals=ApprovalStore(replay_dir / "approvals.jsonl"),

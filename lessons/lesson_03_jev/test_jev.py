@@ -14,7 +14,10 @@ Live calls are opt-in:
     AGENT_LAB_JUDGMENT=jev      .venv/bin/python -m pytest lessons/lesson_03_jev -v
     AGENT_LAB_JUDGMENT=stub     .venv/bin/python -m pytest lessons/lesson_03_jev -v
 
-Default is `stub`, so the suite never spends money or needs a key.
+Default is `stub`, so the suite never spends money or needs a key. When you do run
+the live tests, the key is resolved by `agent_lab/credentials.py` — from the
+environment, from a gitignored `.env`, or from the file a `.env` points at. The
+repo never hardcodes where a secret lives; section 6 pins that behaviour.
 """
 
 from __future__ import annotations
@@ -25,6 +28,15 @@ from pathlib import Path
 import pytest
 
 from agent_lab.approvals import ApprovalStore
+from agent_lab.credentials import (
+    CREDENTIAL_ENV,
+    DOTENV_ENV,
+    POINTER_ENV,
+    CredentialError,
+    load_typesafe_credentials,
+    parse_env_file,
+    read_env_file,
+)
 from agent_lab.judgment import (
     CRITERIA,
     GAP_INSTRUCTIONS,
@@ -200,11 +212,20 @@ def test_low_confidence_escalates_before_preparing(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
+def _live_key_or_skip() -> None:
+    """Live tests need a key. Say where to put one instead of failing obscurely."""
+    try:
+        load_typesafe_credentials()
+    except CredentialError as exc:
+        pytest.skip(str(exc).splitlines()[0])
+
+
 @pytest.mark.skipif(
     os.getenv("AGENT_LAB_JUDGMENT") != "jev",
     reason="set AGENT_LAB_JUDGMENT=jev to run the live TypeSafe call",
 )
 def test_live_jev_returns_a_valid_typed_judgment(tmp_path: Path) -> None:
+    _live_key_or_skip()
     source = JevSource()
     judgment = source.judge(ASSESSMENT)
 
@@ -220,6 +241,7 @@ def test_live_jev_returns_a_valid_typed_judgment(tmp_path: Path) -> None:
     reason="set AGENT_LAB_JUDGMENT=jev to run the live workflow",
 )
 def test_live_jev_drives_the_workflow_end_to_end(tmp_path: Path) -> None:
+    _live_key_or_skip()
     deps = _deps(tmp_path, JevSource(), tag="live")
     out = run_plain(
         RunState(run_id="live", assessment_text=ASSESSMENT),
@@ -242,3 +264,133 @@ def test_live_jev_drives_the_workflow_end_to_end(tmp_path: Path) -> None:
             review_gap=out.judgment.review_gap_evidenced,
             usage=events[1].detail["usage"],
         )
+
+
+# --------------------------------------------------------------------------
+# 6. Where the key comes from — no personal path baked into the repo.
+# --------------------------------------------------------------------------
+
+
+def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point the loader at a temp `.env` and clear anything already exported."""
+    monkeypatch.delenv(CREDENTIAL_ENV, raising=False)
+    monkeypatch.delenv(POINTER_ENV, raising=False)
+    dotenv = tmp_path / ".env"
+    monkeypatch.setenv(DOTENV_ENV, str(dotenv))
+    return dotenv
+
+
+def test_env_file_parser_handles_the_documented_subset() -> None:
+    values = parse_env_file(
+        "\n".join(
+            [
+                "# a comment",
+                "",
+                "export EXPORTED=1",
+                "QUOTED=\"two words\"",
+                "SINGLE='one word'",
+                "SPACED   =   value   ",
+                "NOT_A_PAIR",
+                "URL=https://example.test/?a=1",
+                "DUP=first",
+                "DUP=second",
+            ]
+        )
+    )
+
+    assert values["EXPORTED"] == "1", "an `export ` prefix is tolerated"
+    assert values["QUOTED"] == "two words"
+    assert values["SINGLE"] == "one word"
+    assert values["SPACED"] == "value"
+    assert "NOT_A_PAIR" not in values
+    assert values["URL"] == "https://example.test/?a=1", "only the first = splits"
+    assert values["DUP"] == "second", "last assignment wins"
+
+
+def test_values_are_literal_and_never_interpolated() -> None:
+    """Reading a .env must not expand anything, and must not execute anything."""
+    values = parse_env_file("A=$HOME/x\nB=`whoami`\nC=${A}")
+
+    assert values == {"A": "$HOME/x", "B": "`whoami`", "C": "${A}"}
+
+
+def test_the_environment_wins_over_any_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f"{CREDENTIAL_ENV}=from-file\n", encoding="utf-8")
+    monkeypatch.setenv(CREDENTIAL_ENV, "from-environment")
+
+    assert load_typesafe_credentials() == "from-environment"
+    assert os.environ[CREDENTIAL_ENV] == "from-environment"
+
+
+def test_a_key_can_live_in_the_gitignored_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f"# local\n{CREDENTIAL_ENV}=direct-key\n", encoding="utf-8")
+
+    assert load_typesafe_credentials() == "direct-key"
+    assert os.environ[CREDENTIAL_ENV] == "direct-key", "the SDK reads the environment"
+
+
+def test_a_pointer_variable_can_name_the_file_holding_the_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    secrets = tmp_path / "elsewhere" / "typesafe.env"
+    secrets.parent.mkdir()
+    secrets.write_text(f"{CREDENTIAL_ENV}=pointed-key\n", encoding="utf-8")
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f"{POINTER_ENV}={secrets}\n", encoding="utf-8")
+
+    assert load_typesafe_credentials() == "pointed-key"
+
+
+def test_a_relative_pointer_resolves_beside_the_file_that_declared_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """So a checkout stays portable: move the folder, the pointer still works."""
+    nested = tmp_path / "private"
+    nested.mkdir()
+    (nested / "typesafe.env").write_text(
+        f"{CREDENTIAL_ENV}=relative-key\n", encoding="utf-8"
+    )
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f"{POINTER_ENV}=private/typesafe.env\n", encoding="utf-8")
+
+    assert load_typesafe_credentials() == "relative-key"
+
+
+def test_a_pointer_at_a_file_without_the_key_names_the_problem(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "empty.env"
+    target.write_text("SOMETHING_ELSE=1\n", encoding="utf-8")
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f"{POINTER_ENV}={target}\n", encoding="utf-8")
+
+    with pytest.raises(CredentialError) as caught:
+        load_typesafe_credentials()
+
+    message = str(caught.value)
+    assert str(target) in message, "name the file that was actually read"
+    assert CREDENTIAL_ENV in message
+
+
+def test_no_key_anywhere_is_an_actionable_error_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _isolate(monkeypatch, tmp_path)  # a .env that does not exist is the normal case
+
+    with pytest.raises(CredentialError) as caught:
+        load_typesafe_credentials()
+
+    message = str(caught.value)
+    assert ".env.example" in message, "point at the template to copy"
+    assert POINTER_ENV in message, "document the pointer option"
+    assert CREDENTIAL_ENV not in os.environ
+
+
+def test_a_missing_env_file_is_empty_rather_than_an_error(tmp_path: Path) -> None:
+    assert read_env_file(tmp_path / "nope.env") == {}

@@ -113,11 +113,12 @@ python3 -m venv .venv
 
 <section class="lesson" id="shape">
   <div class="lesson-head"><span class="badge">Shape</span><h2>The shape of the thing</h2></div>
-  <p class="why">Eight small files. Read them in this order; each one is short
+  <p class="why">Nine small files. Read them in this order; each one is short
   enough to hold in your head at once.</p>
   <pre class="code" data-lang="text"><code>agent_lab/state.py          typed state, legal transitions, terminals, budgets
 agent_lab/encoding.py       the encoding rules that stop silent corruption
 agent_lab/judgment.py       where a typed model judgment comes from
+agent_lab/credentials.py    where the Jev key comes from (pointer, no baked paths)
 agent_lab/runlog.py         append-only run evidence
 agent_lab/approvals.py      human approval bound to an exact digest
 agent_lab/workflow.py       the workflow as a PLAIN Python state machine
@@ -1178,7 +1179,7 @@ def source_from_env() -&gt; JudgmentSource:
     &quot;&quot;&quot;`AGENT_LAB_JUDGMENT=jev|recorded|stub` — explicit, never guessed.&quot;&quot;&quot;
     selected = os.getenv(&quot;AGENT_LAB_JUDGMENT&quot;, &quot;stub&quot;).strip()
     recording = Path(
-        os.getenv(&quot;AGENT_LAB_RECORDING&quot;, &quot;recordings/review_follow_up.json&quot;)
+        os.getenv(&quot;AGENT_LAB_RECORDING&quot;, &quot;recordings/northside-garden-care.json&quot;)
     )
     if selected == &quot;jev&quot;:
         return JevSource()
@@ -1207,7 +1208,10 @@ Live calls are opt-in:
     AGENT_LAB_JUDGMENT=jev      .venv/bin/python -m pytest lessons/lesson_03_jev -v
     AGENT_LAB_JUDGMENT=stub     .venv/bin/python -m pytest lessons/lesson_03_jev -v
 
-Default is `stub`, so the suite never spends money or needs a key.
+Default is `stub`, so the suite never spends money or needs a key. When you do run
+the live tests, the key is resolved by `agent_lab/credentials.py` — from the
+environment, from a gitignored `.env`, or from the file a `.env` points at. The
+repo never hardcodes where a secret lives; section 6 pins that behaviour.
 &quot;&quot;&quot;
 
 from __future__ import annotations
@@ -1218,6 +1222,15 @@ from pathlib import Path
 import pytest
 
 from agent_lab.approvals import ApprovalStore
+from agent_lab.credentials import (
+    CREDENTIAL_ENV,
+    DOTENV_ENV,
+    POINTER_ENV,
+    CredentialError,
+    load_typesafe_credentials,
+    parse_env_file,
+    read_env_file,
+)
 from agent_lab.judgment import (
     CRITERIA,
     GAP_INSTRUCTIONS,
@@ -1393,11 +1406,20 @@ def test_low_confidence_escalates_before_preparing(tmp_path: Path) -&gt; None:
 # --------------------------------------------------------------------------
 
 
+def _live_key_or_skip() -&gt; None:
+    &quot;&quot;&quot;Live tests need a key. Say where to put one instead of failing obscurely.&quot;&quot;&quot;
+    try:
+        load_typesafe_credentials()
+    except CredentialError as exc:
+        pytest.skip(str(exc).splitlines()[0])
+
+
 @pytest.mark.skipif(
     os.getenv(&quot;AGENT_LAB_JUDGMENT&quot;) != &quot;jev&quot;,
     reason=&quot;set AGENT_LAB_JUDGMENT=jev to run the live TypeSafe call&quot;,
 )
 def test_live_jev_returns_a_valid_typed_judgment(tmp_path: Path) -&gt; None:
+    _live_key_or_skip()
     source = JevSource()
     judgment = source.judge(ASSESSMENT)
 
@@ -1413,6 +1435,7 @@ def test_live_jev_returns_a_valid_typed_judgment(tmp_path: Path) -&gt; None:
     reason=&quot;set AGENT_LAB_JUDGMENT=jev to run the live workflow&quot;,
 )
 def test_live_jev_drives_the_workflow_end_to_end(tmp_path: Path) -&gt; None:
+    _live_key_or_skip()
     deps = _deps(tmp_path, JevSource(), tag=&quot;live&quot;)
     out = run_plain(
         RunState(run_id=&quot;live&quot;, assessment_text=ASSESSMENT),
@@ -1435,6 +1458,136 @@ def test_live_jev_drives_the_workflow_end_to_end(tmp_path: Path) -&gt; None:
             review_gap=out.judgment.review_gap_evidenced,
             usage=events[1].detail[&quot;usage&quot;],
         )
+
+
+# --------------------------------------------------------------------------
+# 6. Where the key comes from — no personal path baked into the repo.
+# --------------------------------------------------------------------------
+
+
+def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -&gt; Path:
+    &quot;&quot;&quot;Point the loader at a temp `.env` and clear anything already exported.&quot;&quot;&quot;
+    monkeypatch.delenv(CREDENTIAL_ENV, raising=False)
+    monkeypatch.delenv(POINTER_ENV, raising=False)
+    dotenv = tmp_path / &quot;.env&quot;
+    monkeypatch.setenv(DOTENV_ENV, str(dotenv))
+    return dotenv
+
+
+def test_env_file_parser_handles_the_documented_subset() -&gt; None:
+    values = parse_env_file(
+        &quot;\n&quot;.join(
+            [
+                &quot;# a comment&quot;,
+                &quot;&quot;,
+                &quot;export EXPORTED=1&quot;,
+                &quot;QUOTED=\&quot;two words\&quot;&quot;,
+                &quot;SINGLE=&#x27;one word&#x27;&quot;,
+                &quot;SPACED   =   value   &quot;,
+                &quot;NOT_A_PAIR&quot;,
+                &quot;URL=https://example.test/?a=1&quot;,
+                &quot;DUP=first&quot;,
+                &quot;DUP=second&quot;,
+            ]
+        )
+    )
+
+    assert values[&quot;EXPORTED&quot;] == &quot;1&quot;, &quot;an `export ` prefix is tolerated&quot;
+    assert values[&quot;QUOTED&quot;] == &quot;two words&quot;
+    assert values[&quot;SINGLE&quot;] == &quot;one word&quot;
+    assert values[&quot;SPACED&quot;] == &quot;value&quot;
+    assert &quot;NOT_A_PAIR&quot; not in values
+    assert values[&quot;URL&quot;] == &quot;https://example.test/?a=1&quot;, &quot;only the first = splits&quot;
+    assert values[&quot;DUP&quot;] == &quot;second&quot;, &quot;last assignment wins&quot;
+
+
+def test_values_are_literal_and_never_interpolated() -&gt; None:
+    &quot;&quot;&quot;Reading a .env must not expand anything, and must not execute anything.&quot;&quot;&quot;
+    values = parse_env_file(&quot;A=$HOME/x\nB=`whoami`\nC=${A}&quot;)
+
+    assert values == {&quot;A&quot;: &quot;$HOME/x&quot;, &quot;B&quot;: &quot;`whoami`&quot;, &quot;C&quot;: &quot;${A}&quot;}
+
+
+def test_the_environment_wins_over_any_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -&gt; None:
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f&quot;{CREDENTIAL_ENV}=from-file\n&quot;, encoding=&quot;utf-8&quot;)
+    monkeypatch.setenv(CREDENTIAL_ENV, &quot;from-environment&quot;)
+
+    assert load_typesafe_credentials() == &quot;from-environment&quot;
+    assert os.environ[CREDENTIAL_ENV] == &quot;from-environment&quot;
+
+
+def test_a_key_can_live_in_the_gitignored_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -&gt; None:
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f&quot;# local\n{CREDENTIAL_ENV}=direct-key\n&quot;, encoding=&quot;utf-8&quot;)
+
+    assert load_typesafe_credentials() == &quot;direct-key&quot;
+    assert os.environ[CREDENTIAL_ENV] == &quot;direct-key&quot;, &quot;the SDK reads the environment&quot;
+
+
+def test_a_pointer_variable_can_name_the_file_holding_the_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -&gt; None:
+    secrets = tmp_path / &quot;elsewhere&quot; / &quot;typesafe.env&quot;
+    secrets.parent.mkdir()
+    secrets.write_text(f&quot;{CREDENTIAL_ENV}=pointed-key\n&quot;, encoding=&quot;utf-8&quot;)
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f&quot;{POINTER_ENV}={secrets}\n&quot;, encoding=&quot;utf-8&quot;)
+
+    assert load_typesafe_credentials() == &quot;pointed-key&quot;
+
+
+def test_a_relative_pointer_resolves_beside_the_file_that_declared_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -&gt; None:
+    &quot;&quot;&quot;So a checkout stays portable: move the folder, the pointer still works.&quot;&quot;&quot;
+    nested = tmp_path / &quot;private&quot;
+    nested.mkdir()
+    (nested / &quot;typesafe.env&quot;).write_text(
+        f&quot;{CREDENTIAL_ENV}=relative-key\n&quot;, encoding=&quot;utf-8&quot;
+    )
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f&quot;{POINTER_ENV}=private/typesafe.env\n&quot;, encoding=&quot;utf-8&quot;)
+
+    assert load_typesafe_credentials() == &quot;relative-key&quot;
+
+
+def test_a_pointer_at_a_file_without_the_key_names_the_problem(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -&gt; None:
+    target = tmp_path / &quot;empty.env&quot;
+    target.write_text(&quot;SOMETHING_ELSE=1\n&quot;, encoding=&quot;utf-8&quot;)
+    dotenv = _isolate(monkeypatch, tmp_path)
+    dotenv.write_text(f&quot;{POINTER_ENV}={target}\n&quot;, encoding=&quot;utf-8&quot;)
+
+    with pytest.raises(CredentialError) as caught:
+        load_typesafe_credentials()
+
+    message = str(caught.value)
+    assert str(target) in message, &quot;name the file that was actually read&quot;
+    assert CREDENTIAL_ENV in message
+
+
+def test_no_key_anywhere_is_an_actionable_error_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -&gt; None:
+    _isolate(monkeypatch, tmp_path)  # a .env that does not exist is the normal case
+
+    with pytest.raises(CredentialError) as caught:
+        load_typesafe_credentials()
+
+    message = str(caught.value)
+    assert &quot;.env.example&quot; in message, &quot;point at the template to copy&quot;
+    assert POINTER_ENV in message, &quot;document the pointer option&quot;
+    assert CREDENTIAL_ENV not in os.environ
+
+
+def test_a_missing_env_file_is_empty_rather_than_an_error(tmp_path: Path) -&gt; None:
+    assert read_env_file(tmp_path / &quot;nope.env&quot;) == {}
 </code></pre>
       </details>
     </section>
@@ -1856,8 +2009,11 @@ def test_graph_and_plain_agree_after_approval(deps) -&gt; None:
   when this page was generated.</p>
 
   <h3>Tests</h3>
-  <div class="out">.....................................ss                                  [100%]
-37 passed, 2 skipped in 0.10s</div>
+  <div class="out">.....................................ss.........                         [100%]
+=========================== short test summary info ============================
+SKIPPED [1] lessons/lesson_03_jev/test_jev.py:223: set AGENT_LAB_JUDGMENT=jev to run the live TypeSafe call
+SKIPPED [1] lessons/lesson_03_jev/test_jev.py:239: set AGENT_LAB_JUDGMENT=jev to run the live workflow
+46 passed, 2 skipped in 0.11s</div>
 
   <h3>Live Jev run, frozen for replay, then replayed</h3>
   <div class="out">====================================================================
@@ -1877,26 +2033,28 @@ RUN LOG (what actually happened, in order)
   seq3  prepare         prepare-&gt;verify              terminal=None
   seq4  verify          verify-&gt;awaiting_approval    terminal=None
   seq5  await_approval  route-&gt;needs_review          terminal=NEEDS_REVIEW
-  seq6  await_approval  route-&gt;needs_review          terminal=NEEDS_REVIEW
-  seq7  await_approval  awaiting_approval-&gt;done      terminal=SUCCESS
-  seq8  intake          intake-&gt;classify             terminal=None
-  seq9  classify        classify-&gt;route              terminal=None
-  seq10  route           route-&gt;prepare               terminal=None
-  seq11  prepare         prepare-&gt;verify              terminal=None
-  seq12  verify          verify-&gt;awaiting_approval    terminal=None
-  seq13  await_approval  awaiting_approval-&gt;done      terminal=SUCCESS
 
 ====================================================================
 OUTCOME
 ====================================================================
-  terminal   : SUCCESS
-  stage      : done
+  terminal   : NEEDS_REVIEW
+  stage      : awaiting_approval
   steps used : 6/12
   digest     : ba070a340844a1b144869c42fd9275097c1c488897461284a596898b72f09e5f
-  log digest : bdc5dbc76f55b082b313c79987bf6f9b...
+  log digest : f8f10ecfe0822d73ebbfdc44f1962d9f...
 
   frozen to  : recordings/northside-garden-care.json
-  replay identical to live run: False</div>
+  replay identical to live run: True
+
+====================================================================
+APPROVAL GATE
+====================================================================
+  The run stopped here. Nothing was sent or published.
+  To continue, an approval must name this exact digest:
+      run_id       = live-demo
+      draft_digest = ba070a340844a1b144869c42fd9275097c1c488897461284a596898b72f09e5f
+
+  Try it: .venv/bin/python scripts/approve_demo.py</div>
 
   <h3>The graph the framework builds</h3>
   <div class="out">stateDiagram-v2
@@ -1936,6 +2094,9 @@ OUTCOME
     machines, and no tracing backend.</li>
     <li>The approval store is an append-only local file. It records who was
     named as approver; it does not authenticate them.</li>
+    <li><code>.env</code> and the pointer it can hold are conveniences, not a
+    secrets manager: a key written there is plaintext on disk. Point
+    <code>TYPESAFE_ENV_FILE</code> at a real secret store for anything more.</li>
     <li>The stub and recorded sources make behaviour deterministic; a live Jev
     call may differ run to run. Only <code>recorded</code> is replay-stable.</li>
     <li>Thresholds (0.60 confidence) are illustrative. Real thresholds need
