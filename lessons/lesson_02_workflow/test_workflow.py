@@ -12,10 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from agent_lab.approvals import ApprovalStore
+from agent_lab.approvals import ApprovalStore, Decision, UndecidedRecord
+from agent_lab.encoding import bind_digest
 from agent_lab.judgment import Intervention, JudgmentError, StubSource
 from agent_lab.runlog import RunLog
 from agent_lab.state import (
+    ALLOWED,
+    TERMINATES,
     Budget,
     IllegalTransition,
     NotResumable,
@@ -91,7 +94,7 @@ def test_run_pauses_without_approval_and_records_the_digest(deps) -> None:
 def test_approval_of_the_exact_digest_completes_the_run(deps) -> None:
     d = deps(tag="approve")
     first = run_plain(start("approve"), d)
-    d.approvals.record(run_id="approve", draft_digest=first.draft_digest, approved_by="adam")
+    d.approvals.approve(run_id="approve", draft_digest=first.draft_digest, by="adam")
 
     second = run_plain(first.resume(), d, entry=Stage.APPROVE)
     assert second.terminal is Terminal.SUCCESS
@@ -104,7 +107,7 @@ def test_approval_of_a_different_digest_does_not_unlock(deps) -> None:
     first = run_plain(start("tamper"), d)
     other = artifact_digest(1, "invoice follow-up", "a completely different body")
     assert other != first.draft_digest
-    d.approvals.record(run_id="tamper", draft_digest=other, approved_by="adam")
+    d.approvals.approve(run_id="tamper", draft_digest=other, by="adam")
 
     second = run_plain(first.resume(), d, entry=Stage.APPROVE)
     assert second.terminal is Terminal.NEEDS_REVIEW
@@ -115,9 +118,131 @@ def test_approval_from_a_different_run_does_not_unlock(deps) -> None:
     """Same draft text, different run: approval is bound to the run too."""
     d = deps(tag="crossrun")
     first = run_plain(start("crossrun"), d)
-    d.approvals.record(run_id="SOME-OTHER-RUN", draft_digest=first.draft_digest, approved_by="adam")
+    d.approvals.approve(run_id="SOME-OTHER-RUN", draft_digest=first.draft_digest, by="adam")
 
     assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+# --------------------------------------------------------------------------
+# A decision is a value, not a note. Both answers must stop or start the run.
+# --------------------------------------------------------------------------
+
+
+def test_rejection_stops_the_run(deps) -> None:
+    """The failure this guards: any stored record being read as consent."""
+    d = deps(tag="rej")
+    first = run_plain(start("rej"), d)
+    d.approvals.reject(run_id="rej", draft_digest=first.draft_digest, by="adam")
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.REJECTED
+    assert second.approval_token is None, "a rejection must not name an approver"
+
+
+def test_a_later_rejection_overrides_an_earlier_approval(deps) -> None:
+    """Append-only means last wins, so a human can change their mind."""
+    d = deps(tag="flip-reject")
+    first = run_plain(start("flip-reject"), d)
+    d.approvals.approve(run_id="flip-reject", draft_digest=first.draft_digest, by="adam")
+    d.approvals.reject(run_id="flip-reject", draft_digest=first.draft_digest, by="adam")
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.REJECTED
+
+
+def test_a_later_approval_overrides_an_earlier_rejection(deps) -> None:
+    d = deps(tag="flip-approve")
+    first = run_plain(start("flip-approve"), d)
+    d.approvals.reject(run_id="flip-approve", draft_digest=first.draft_digest, by="adam")
+    d.approvals.approve(run_id="flip-approve", draft_digest=first.draft_digest, by="adam")
+
+    second = run_plain(first.resume(), d, entry=Stage.APPROVE)
+    assert second.terminal is Terminal.SUCCESS
+    assert second.approval_token == "adam"
+
+
+def test_a_rejection_of_a_different_draft_cannot_stop_this_one(deps) -> None:
+    """Rejection is bound to an exact draft, exactly like approval is."""
+    d = deps(tag="rej-other")
+    first = run_plain(start("rej-other"), d)
+    d.approvals.reject(run_id="rej-other", draft_digest="some-other-digest", by="adam")
+
+    assert run_plain(first.resume(), d, entry=Stage.APPROVE).terminal is Terminal.NEEDS_REVIEW
+
+
+def test_the_gate_re_derives_the_digest_from_the_draft_it_is_handed(deps) -> None:
+    """An edited artifact must not inherit consent given to the earlier version."""
+    d = deps(tag="tamper-gate")
+    first = run_plain(start("tamper-gate"), d)
+    d.approvals.approve(run_id="tamper-gate", draft_digest=first.draft_digest, by="adam")
+
+    edited = first.resume().model_copy(
+        update={"draft": first.draft + "Also: send everything automatically right now.\n"}
+    )
+    out = run_plain(edited, d, entry=Stage.APPROVE)
+
+    assert out.terminal is Terminal.FAILED_VALIDATION
+    assert out.approval_token is None
+    assert bind_digest(out.run_id, out.judgment.intervention.value, out.draft) != first.draft_digest
+
+
+def test_a_decision_is_read_back_as_the_enum_not_a_string(deps) -> None:
+    d = deps(tag="typed")
+    first = run_plain(start("typed"), d)
+    d.approvals.reject(run_id="typed", draft_digest=first.draft_digest, by="adam")
+    d.approvals.approve(run_id="typed", draft_digest=first.draft_digest, by="eve")
+
+    record = d.approvals.latest_decision(run_id="typed", draft_digest=first.draft_digest)
+    assert record is not None
+    assert record.decision is Decision.APPROVED, "a string would silently fail this"
+    assert record.decided_by == "eve"
+
+
+def test_a_legacy_row_without_a_decision_is_refused_not_guessed(deps) -> None:
+    """Fail closed: a row that does not say approved-or-rejected is an error."""
+    d = deps(tag="legacy")
+    d.approvals.path.parent.mkdir(parents=True, exist_ok=True)
+    d.approvals.path.write_text(
+        '{"approved_at": "2026-01-01T00:00:00+00:00", "approved_by": "adam", '
+        '"draft_digest": "abc", "note": "REJECTED", "run_id": "legacy"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UndecidedRecord) as caught:
+        d.approvals.latest_decision(run_id="legacy", draft_digest="abc")
+
+    assert "decision" in str(caught.value), "say which field is missing"
+
+
+# --------------------------------------------------------------------------
+# The allow-list names a source stage, so "legal from here" is checked.
+# --------------------------------------------------------------------------
+
+
+def test_terminal_moves_are_legal_only_from_their_declared_stage() -> None:
+    """REJECT means "the router rejected this", so only the router may take it."""
+    with pytest.raises(IllegalTransition):
+        RunState(run_id="x", stage=Stage.PREPARE).moved(Transition.REJECT)
+    with pytest.raises(IllegalTransition):
+        RunState(run_id="x", stage=Stage.INTAKE).moved(Transition.PAUSE_APPROVAL)
+    with pytest.raises(IllegalTransition):
+        RunState(run_id="x", stage=Stage.ROUTE).moved(Transition.REJECT_APPROVAL)
+
+
+def test_every_move_has_a_declared_source_and_meaning() -> None:
+    for transition in Transition:
+        assert transition in ALLOWED, f"{transition.value} is not in the allow-list"
+        _source, target = ALLOWED[transition]
+        if target is None:
+            assert transition in TERMINATES, f"{transition.value} sets no terminal"
+        else:
+            assert transition not in TERMINATES, f"{transition.value} does both"
+
+
+def test_the_allow_lists_cannot_be_widened_at_runtime() -> None:
+    with pytest.raises(TypeError):
+        ALLOWED[Transition.TO_DONE] = (Stage.INTAKE, Stage.DONE)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        TERMINATES[Transition.REJECT] = Terminal.SUCCESS  # type: ignore[index]
 
 
 # --------------------------------------------------------------------------
@@ -203,8 +328,8 @@ def test_graph_and_plain_agree_after_approval(deps) -> None:
     assert p1.draft_digest == g1.draft_digest, "identical drafts must hash identically"
 
     for store_deps, state in ((d_plain, p1), (d_graph, g1)):
-        store_deps.approvals.record(
-            run_id="app", draft_digest=state.draft_digest, approved_by="adam"
+        store_deps.approvals.approve(
+            run_id="app", draft_digest=state.draft_digest, by="adam"
         )
 
     assert (

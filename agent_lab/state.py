@@ -7,7 +7,8 @@ data that a router reads, but every allowed transition is declared here.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,7 +72,12 @@ class NotResumable(RuntimeError):
 
 
 class Transition(str, Enum):
-    """Allow-list of legal moves. The router refuses anything not listed."""
+    """Allow-list of legal moves. The router refuses anything not listed.
+
+    A move names its source stage, so "legal from here" is checkable rather than
+    assumed. `None` as a source means the move is legal from any stage, which is
+    reserved for failures that must be reachable wherever they happen.
+    """
 
     TO_CLASSIFY = "intake->classify"
     TO_ROUTE = "classify->route"
@@ -79,24 +85,54 @@ class Transition(str, Enum):
     TO_VERIFY = "prepare->verify"
     TO_APPROVE = "verify->awaiting_approval"
     TO_DONE = "awaiting_approval->done"
+
+    REJECT = "route->rejected"
     ESCALATE_REVIEW = "route->needs_review"
     ESCALATE_VALIDATION = "verify->failed_validation"
+    PAUSE_APPROVAL = "awaiting_approval->needs_review"
+    REJECT_APPROVAL = "awaiting_approval->rejected"
+    FAIL_APPROVAL_DIGEST = "awaiting_approval->failed_validation"
+    FAIL_VALIDATION = "any->failed_validation"
     ESCALATE_BUDGET = "any->failed_budget"
-    REJECT = "route->rejected"
 
 
-ALLOWED: dict[Transition, tuple[Stage | None, Stage | None]] = {
-    Transition.TO_CLASSIFY: (Stage.INTAKE, Stage.CLASSIFY),
-    Transition.TO_ROUTE: (Stage.CLASSIFY, Stage.ROUTE),
-    Transition.TO_PREPARE: (Stage.ROUTE, Stage.PREPARE),
-    Transition.TO_VERIFY: (Stage.PREPARE, Stage.VERIFY),
-    Transition.TO_APPROVE: (Stage.VERIFY, Stage.APPROVE),
-    Transition.TO_DONE: (Stage.APPROVE, Stage.DONE),
-    Transition.ESCALATE_REVIEW: (None, None),
-    Transition.ESCALATE_VALIDATION: (None, None),
-    Transition.ESCALATE_BUDGET: (None, None),
-    Transition.REJECT: (None, None),
-}
+#: (source stage, target stage) for every legal move. A `None` target means the
+#: move sets a terminal instead of advancing the stage; `TERMINATES` names it.
+#: A `None` source means the move is legal from any stage.
+#: Read-only, so no import or extension can widen the allow-list at runtime.
+ALLOWED: Mapping[Transition, tuple[Stage | None, Stage | None]] = MappingProxyType(
+    {
+        Transition.TO_CLASSIFY: (Stage.INTAKE, Stage.CLASSIFY),
+        Transition.TO_ROUTE: (Stage.CLASSIFY, Stage.ROUTE),
+        Transition.TO_PREPARE: (Stage.ROUTE, Stage.PREPARE),
+        Transition.TO_VERIFY: (Stage.PREPARE, Stage.VERIFY),
+        Transition.TO_APPROVE: (Stage.VERIFY, Stage.APPROVE),
+        Transition.TO_DONE: (Stage.APPROVE, Stage.DONE),
+        Transition.REJECT: (Stage.ROUTE, None),
+        Transition.ESCALATE_REVIEW: (Stage.ROUTE, None),
+        Transition.ESCALATE_VALIDATION: (Stage.VERIFY, None),
+        Transition.PAUSE_APPROVAL: (Stage.APPROVE, None),
+        Transition.REJECT_APPROVAL: (Stage.APPROVE, None),
+        Transition.FAIL_APPROVAL_DIGEST: (Stage.APPROVE, None),
+        Transition.FAIL_VALIDATION: (None, None),
+        Transition.ESCALATE_BUDGET: (None, None),
+    }
+)
+
+#: The terminal each stage-preserving move sets. Kept separate from `ALLOWED` so
+#: that "where may I go" and "what does that mean" are both explicit.
+TERMINATES: Mapping[Transition, Terminal] = MappingProxyType(
+    {
+        Transition.REJECT: Terminal.REJECTED,
+        Transition.ESCALATE_REVIEW: Terminal.NEEDS_REVIEW,
+        Transition.ESCALATE_VALIDATION: Terminal.FAILED_VALIDATION,
+        Transition.PAUSE_APPROVAL: Terminal.NEEDS_REVIEW,
+        Transition.REJECT_APPROVAL: Terminal.REJECTED,
+        Transition.FAIL_APPROVAL_DIGEST: Terminal.FAILED_VALIDATION,
+        Transition.FAIL_VALIDATION: Terminal.FAILED_VALIDATION,
+        Transition.ESCALATE_BUDGET: Terminal.FAILED_BUDGET,
+    }
+)
 
 
 class Budget(Strict):
@@ -145,41 +181,33 @@ class RunState(Strict):
         return self.model_copy(update={"terminal": None})
 
     def moved(self, transition: Transition) -> "RunState":
-        """Return a NEW state moved along a legal transition, or raise."""
-        if transition is Transition.ESCALATE_BUDGET:
-            return self.model_copy(
-                update={
-                    "terminal": Terminal.FAILED_BUDGET,
-                    "events": self.events + (transition.value,),
-                }
+        """Return a NEW state moved along a legal transition, or raise.
+
+        The allow-list is the only way forward: an unknown move, or a legal move
+        attempted from the wrong stage, raises `IllegalTransition`.
+        """
+        try:
+            source, target = ALLOWED[transition]
+        except KeyError:
+            raise IllegalTransition(
+                f"{transition.value} is not a declared transition"
+            ) from None
+
+        if source is not None and self.stage is not source:
+            raise IllegalTransition(
+                f"{transition.value} not legal from {self.stage.value}"
             )
 
-        source, target = ALLOWED[transition]
-
-        escalations = {
-            Transition.ESCALATE_REVIEW: Terminal.NEEDS_REVIEW,
-            Transition.ESCALATE_VALIDATION: Terminal.FAILED_VALIDATION,
-            Transition.REJECT: Terminal.REJECTED,
-        }
-        if transition in escalations:
-            if source is not None and self.stage is not source:
-                raise IllegalTransition(f"{transition.value} not legal from {self.stage.value}")
-            return self.model_copy(
-                update={
-                    "terminal": escalations[transition],
-                    "events": self.events + (transition.value,),
-                }
-            )
-
-        if self.stage is not source:
-            raise IllegalTransition(f"{transition.value} not legal from {self.stage.value}")
-        terminal = Terminal.SUCCESS if target is Stage.DONE else None
-        return self.model_copy(
-            update={
+        if target is None:
+            update: dict[str, object] = {"terminal": TERMINATES[transition]}
+        else:
+            update = {
                 "stage": target,
-                "terminal": terminal,
-                "events": self.events + (transition.value,),
+                "terminal": Terminal.SUCCESS if target is Stage.DONE else None,
             }
+
+        return self.model_copy(
+            update={**update, "events": self.events + (transition.value,)}
         )
 
 

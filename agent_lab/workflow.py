@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from .approvals import Approval, ApprovalStore
+from .approvals import ApprovalStore, Decision, DecisionRecord
 from .encoding import bind_digest, canonical_digest
 from .judgment import JudgmentSource
 from .runlog import RunEvent, RunLog
@@ -147,24 +147,52 @@ def n_verify(state: RunState, deps: Deps) -> tuple[RunState, Transition, dict]:
 
 
 def n_await_approval(state: RunState, deps: Deps) -> tuple[RunState, Transition, dict]:
-    """Pause point. Nothing happens unless an exact-digest approval exists."""
-    if not state.draft_digest:
-        raise ValueError("approval gate reached without a digest")
+    """Pause point. Nothing happens unless an exact-digest APPROVAL exists.
 
-    approval: Approval | None = deps.approvals.find(
-        run_id=state.run_id, draft_digest=state.draft_digest
+    The gate re-derives the digest from the draft it was handed, and never trusts
+    `state.draft_digest`. Trusting it is how an edited draft inherits an approval
+    issued for the version before the edit: the field is a convenience for humans
+    reading a log, not evidence.
+    """
+    if not state.draft or state.judgment is None:
+        raise ValueError("approval gate reached without a prepared draft")
+
+    recomputed = bind_digest(
+        state.run_id, state.judgment.intervention.value, state.draft
     )
-    if approval is None:
-        # Terminal for this pass, not for the run: the approval may arrive later.
-        return state, Transition.ESCALATE_REVIEW, {
-            "reason": "awaiting exact-draft approval",
-            "digest": state.draft_digest,
+    if recomputed != state.draft_digest:
+        return state, Transition.FAIL_APPROVAL_DIGEST, {
+            "problems": [
+                "draft digest does not match the digest presented for approval"
+            ]
         }
 
+    record: DecisionRecord | None = deps.approvals.latest_decision(
+        run_id=state.run_id, draft_digest=recomputed
+    )
+    if record is None:
+        # Terminal for this pass, not for the run: a decision may arrive later.
+        return state, Transition.PAUSE_APPROVAL, {
+            "reason": "awaiting exact-draft approval",
+            "digest": recomputed,
+        }
+
+    outcome = {
+        "decision": record.decision.value,
+        "decided_by": record.decided_by,
+        "decided_at": record.decided_at,
+        "digest": recomputed,
+    }
+
+    if record.decision is Decision.REJECTED:
+        # A rejection is a decision too, and it must stop the run. Treating any
+        # stored record as consent is what let a rejection unlock the gate.
+        return state, Transition.REJECT_APPROVAL, outcome
+
     return (
-        state.model_copy(update={"approval_token": approval.approved_by}),
+        state.model_copy(update={"approval_token": record.decided_by}),
         Transition.TO_DONE,
-        {"approved_by": approval.approved_by, "approved_at": approval.approved_at},
+        outcome,
     )
 
 
